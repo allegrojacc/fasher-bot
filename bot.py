@@ -6,7 +6,7 @@ from discord.ext import commands
 TOKEN = os.getenv("TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = True  # potrzebne do czytania treści wiadomości
+intents.message_content = True 
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -36,7 +36,6 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # ignoruj boty i webhooki
     if message.author.bot or message.webhook_id is not None:
         return
 
