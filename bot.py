@@ -11,11 +11,12 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch)/[^\s<>]+',
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
 def convert_url(url: str) -> str:
+    # X / Twitter
     url = re.sub(
         r'https?://(?:www\.)?(?:x\.com|twitter\.com)/',
         'https://fixupx.com/',
@@ -23,6 +24,7 @@ def convert_url(url: str) -> str:
         flags=re.IGNORECASE
     )
 
+    # Facebook
     url = re.sub(
         r'https?://(?:www\.)?facebook\.com/',
         'https://fixacebook.com/',
@@ -37,6 +39,14 @@ def convert_url(url: str) -> str:
         flags=re.IGNORECASE
     )
 
+    # Instagram
+    url = re.sub(
+        r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/',
+        'https://www.vxinstagram.com/',
+        url,
+        flags=re.IGNORECASE
+    )
+
     return url
 
 def get_service_name(url: str) -> str:
@@ -45,6 +55,9 @@ def get_service_name(url: str) -> str:
 
     if re.search(r'(facebook\.com|fb\.watch)', url, re.IGNORECASE):
         return "Facebook"
+
+    if re.search(r'(instagram\.com|instagr\.am)', url, re.IGNORECASE):
+        return "Instagram"
 
     return "link"
 
