@@ -6,29 +6,47 @@ from discord.ext import commands
 TOKEN = os.getenv("TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = True 
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com)/[^\s<>]+',
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch)/[^\s<>]+',
     re.IGNORECASE
 )
 
-def convert_to_fixupx(url: str) -> str:
+def convert_url(url: str) -> str:
     url = re.sub(
-        r'https?://(?:www\.)?x\.com/',
+        r'https?://(?:www\.)?(?:x\.com|twitter\.com)/',
         'https://fixupx.com/',
         url,
         flags=re.IGNORECASE
     )
+
     url = re.sub(
-        r'https?://(?:www\.)?twitter\.com/',
-        'https://fixupx.com/',
+        r'https?://(?:www\.)?facebook\.com/',
+        'https://fixacebook.com/',
         url,
         flags=re.IGNORECASE
     )
+
+    url = re.sub(
+        r'https?://(?:www\.)?fb\.watch/',
+        'https://fixacebook.com/',
+        url,
+        flags=re.IGNORECASE
+    )
+
     return url
+
+def get_service_name(url: str) -> str:
+    if re.search(r'(x\.com|twitter\.com)', url, re.IGNORECASE):
+        return "X/Twitter"
+
+    if re.search(r'(facebook\.com|fb\.watch)', url, re.IGNORECASE):
+        return "Facebook"
+
+    return "link"
 
 @bot.event
 async def on_ready():
@@ -43,13 +61,22 @@ async def on_message(message: discord.Message):
     if not urls:
         return
 
-    fixed_urls = []
-    for url in urls:
-        fixed = convert_to_fixupx(url)
-        if fixed not in fixed_urls:
-            fixed_urls.append(fixed)
+    responses = []
+    seen = set()
+    username = message.author.display_name
 
-    await message.reply("\n".join(fixed_urls), mention_author=False)
+    for url in urls:
+        fixed = convert_url(url)
+
+        if fixed in seen:
+            continue
+
+        seen.add(fixed)
+
+        service = get_service_name(url)
+        responses.append(f"{username} wysyła link do {service}:\n{fixed}")
+
+    await message.reply("\n\n".join(responses), mention_author=False)
 
     try:
         await message.delete()
