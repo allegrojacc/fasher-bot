@@ -51,7 +51,14 @@ async def on_message(message: discord.Message):
 
     await message.reply("\n".join(fixed_urls), mention_author=False)
 
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        print("Brak uprawnień do usuwania wiadomości.")
+    except discord.HTTPException:
+        print("Nie udało się usunąć wiadomości.")
+
 if __name__ == "__main__":
     if not TOKEN:
-        raise RuntimeError("Ustaw zmienną środowiskową DISCORD_TOKEN z tokenem bota.")
+        raise RuntimeError("Ustaw zmienną środowiskową TOKEN z tokenem bota.")
     bot.run(TOKEN)
