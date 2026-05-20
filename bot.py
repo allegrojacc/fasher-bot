@@ -1,10 +1,29 @@
 import os
 import re
+import threading  # Dodane do uruchomienia serwera w tle
 import discord
 from discord.ext import commands
+from flask import Flask  # Lekki serwer HTTP pod Render.com
+
+# 1. KONFIGURACJA MINI-SERWERA DLA RENDER.COM
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot działa i ma się dobrze!", 200
+
+def run_http_server():
+    # Render automatycznie przypisuje port w zmiennej środowiskowej PORT.
+    # Jeśli jej nie ma, domyślnie odpali na 10000.
+    port = int(os.getenv("PORT", 10000))
+    # host='0.0.0.0' pozwala na komunikację zewnętrzną (np. z UptimeRobot)
+    app.run(host='0.0.0.0', port=port)
+
+# ==========================================
+# BOT
+# ==========================================
 
 TOKEN = os.getenv("TOKEN")
-
 DELETE_ROLE_ID = 1494687052975968306
 
 intents = discord.Intents.default()
@@ -13,7 +32,6 @@ intents.members = True
 intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 active_role_messages = {}
 
 URL_PATTERN = re.compile(
@@ -41,7 +59,6 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
-    """Przykład: !setup_roles "Wybierz Role" 🎮 @Gracz 🎨 @Artysta"""
     if len(args) % 2 != 0:
         await ctx.send("Podaj pary: Emotka i Rola!")
         return
@@ -69,7 +86,6 @@ async def setup_roles(ctx, title: str, *args):
 @has_delete_role()
 @commands.bot_has_permissions(manage_messages=True)
 async def usun_wiadomosci(ctx, *message_ids: int):
-    """Użycie: !uw ID ID ID"""
     deleted = 0
     not_found = 0
 
@@ -82,14 +98,11 @@ async def usun_wiadomosci(ctx, *message_ids: int):
             msg = await ctx.channel.fetch_message(msg_id)
             await msg.delete()
             deleted += 1
-
         except discord.NotFound:
             not_found += 1
-
         except discord.Forbidden:
             await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
             return
-
         except discord.HTTPException:
             await ctx.send("Wystąpił błąd podczas usuwania wiadomości.", delete_after=5)
             return
@@ -138,7 +151,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         if role_id:
             guild = bot.get_guild(payload.guild_id)
             role = guild.get_role(role_id)
-
             if role:
                 await payload.member.add_roles(role)
 
@@ -151,9 +163,15 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             guild = bot.get_guild(payload.guild_id)
             role = guild.get_role(role_id)
             member = await guild.fetch_member(payload.user_id)
-
             if role and member:
                 await member.remove_roles(role)
 
+# URUCHOMIENIE OBU PROCESÓW
 if __name__ == "__main__":
+    # 2. Uruchamiamy serwer HTTP w osobnym wątku, żeby nie blokował bota
+    server_thread = threading.Thread(target=run_http_server)
+    server_thread.daemon = True  # Zamknięcie bota zamknie też serwer
+    server_thread.start()
+
+    # 3. Odpalamy bota Discorda
     bot.run(TOKEN)
