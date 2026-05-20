@@ -1,11 +1,11 @@
 import os
 import re
-import threading  # Dodane do uruchomienia serwera w tle
+import threading
 import discord
 from discord.ext import commands
-from flask import Flask  # Lekki serwer HTTP pod Render.com
+from flask import Flask
 
-# 1. KONFIGURACJA MINI-SERWERA DLA RENDER.COM
+# --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -13,16 +13,11 @@ def home():
     return "Bot działa i ma się dobrze!", 200
 
 def run_http_server():
-    # Render automatycznie przypisuje port w zmiennej środowiskowej PORT.
-    # Jeśli jej nie ma, domyślnie odpali na 10000.
     port = int(os.getenv("PORT", 10000))
-    # host='0.0.0.0' pozwala na komunikację zewnętrzną (np. z UptimeRobot)
     app.run(host='0.0.0.0', port=port)
 
-# ==========================================
-# BOT
-# ==========================================
 
+# --- GŁÓWNY KOD BOTA ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
 
@@ -32,7 +27,6 @@ intents.members = True
 intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-active_role_messages = {}
 
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am)/[^\s<>]+',
@@ -55,33 +49,32 @@ def has_delete_role():
 async def on_ready():
     print(f'Bot działa jako {bot.user}')
 
-# KOMENDA DO TWORZENIA RANG
+# --- KOMENDA DO TWORZENIA RANG ---
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
+    """Przykład: !setup_roles "Wybierz Role" 🎮 @Gracz 🎨 @Artysta"""
     if len(args) % 2 != 0:
         await ctx.send("Podaj pary: Emotka i Rola!")
         return
 
-    role_data = {}
     desc = "Zareaguj, aby otrzymać rangę:\n"
+    emojis_to_react = []
 
     for i in range(0, len(args), 2):
         emoji = args[i]
         role_mention = args[i + 1]
-        role_id = int(re.sub(r'[<@&>]', '', role_mention))
-        role_data[emoji] = role_id
         desc += f"{emoji} - {role_mention}\n"
+        emojis_to_react.append(emoji)
 
     embed = discord.Embed(title=title, description=desc, color=0x00ff00)
     msg = await ctx.send(embed=embed)
 
-    for emoji in role_data.keys():
+    for emoji in emojis_to_react:
         await msg.add_reaction(emoji)
 
-    active_role_messages[msg.id] = role_data
 
-# USUWANIE WIADOMOŚCI PO ID
+# --- USUWANIE WIADOMOŚCI PO ID ---
 @bot.command(name="uw")
 @has_delete_role()
 @commands.bot_has_permissions(manage_messages=True)
@@ -104,15 +97,13 @@ async def usun_wiadomosci(ctx, *message_ids: int):
             await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
             return
         except discord.HTTPException:
-            await ctx.send("Wystąpił błąd podczas usuwania wiadomości.", delete_after=5)
+            await ctx.send("Wystąpił błąd.", delete_after=5)
             return
 
-    await ctx.send(
-        f"Usunięto: {deleted} | Nie znaleziono: {not_found}",
-        delete_after=5
-    )
+    await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5)
 
-# OBSŁUGA LINKÓW
+
+# --- OBSŁUGA LINKÓW ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -140,38 +131,92 @@ async def on_message(message: discord.Message):
         except:
             pass
 
-# REAKCJE DAWANIE ROLI
+
+# --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
         return
 
-    if payload.message_id in active_role_messages:
-        role_id = active_role_messages[payload.message_id].get(str(payload.emoji))
-        if role_id:
-            guild = bot.get_guild(payload.guild_id)
-            role = guild.get_role(role_id)
-            if role:
-                await payload.member.add_roles(role)
+    guild = bot.get_guild(payload.guild_id)
+    if not guild: return
+    
+    channel = guild.get_channel(payload.channel_id)
+    if not channel: return
 
-# REAKCJE ODBIERANIE ROLI
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except:
+        return
+
+    # Sprawdzamy czy to wiadomość bota i czy ma nasz tekst o rangach
+    if message.author != bot.user or not message.embeds:
+        return
+    embed = message.embeds[0]
+    if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
+        return
+
+    # Szukamy klikniętej emotki w tekście embeda
+    emoji_str = str(payload.emoji)
+    for line in embed.description.split('\n'):
+        if line.startswith(emoji_str):
+            # Wyciągamy ID roli z tekstu (np. <@&123456789>)
+            match = re.search(r'<@&(\d+)>', line)
+            if match:
+                role_id = int(match.group(1))
+                role = guild.get_role(role_id)
+                if role:
+                    # Dodajemy rolę użytkownikowi
+                    member = guild.get_member(payload.user_id)
+                    if not member:
+                        member = await guild.fetch_member(payload.user_id)
+                    await member.add_roles(role)
+            break
+
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
-    if payload.message_id in active_role_messages:
-        role_id = active_role_messages[payload.message_id].get(str(payload.emoji))
-        if role_id:
-            guild = bot.get_guild(payload.guild_id)
-            role = guild.get_role(role_id)
-            member = await guild.fetch_member(payload.user_id)
-            if role and member:
-                await member.remove_roles(role)
+    guild = bot.get_guild(payload.guild_id)
+    if not guild: return
+    
+    channel = guild.get_channel(payload.channel_id)
+    if not channel: return
 
-# URUCHOMIENIE OBU PROCESÓW
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except:
+        return
+
+    if message.author != bot.user or not message.embeds:
+        return
+    embed = message.embeds[0]
+    if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
+        return
+
+    emoji_str = str(payload.emoji)
+    for line in embed.description.split('\n'):
+        if line.startswith(emoji_str):
+            match = re.search(r'<@&(\d+)>', line)
+            if match:
+                role_id = int(match.group(1))
+                role = guild.get_role(role_id)
+                if role:
+                    # Zabieramy rolę użytkownikowi
+                    member = guild.get_member(payload.user_id)
+                    if not member:
+                        try:
+                            member = await guild.fetch_member(payload.user_id)
+                        except:
+                            return
+                    await member.remove_roles(role)
+            break
+
+
+# --- START PROCESÓW ---
 if __name__ == "__main__":
-    # 2. Uruchamiamy serwer HTTP w osobnym wątku, żeby nie blokował bota
+    # Uruchamiamy serwer webowy w tle
     server_thread = threading.Thread(target=run_http_server)
-    server_thread.daemon = True  # Zamknięcie bota zamknie też serwer
+    server_thread.daemon = True
     server_thread.start()
 
-    # 3. Odpalamy bota Discorda
+    # Uruchamiamy bota
     bot.run(TOKEN)
