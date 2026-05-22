@@ -69,7 +69,7 @@ async def check_youtube():
             async with session.get(live_url) as live_response:
                 if live_response.status == 200:
                     live_text = await live_response.text()
-                    is_currently_live = '"isLiveNow":true' in live_text or '"isLiveNow": true' in live_text
+                    is_currently_live = '"isLive":true' in live_text or '"isLive": true' in live_text
                     
                     # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
