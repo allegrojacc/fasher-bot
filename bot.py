@@ -2,7 +2,9 @@ import os
 import re
 import threading
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
+import aiohttp
+import xml.etree.ElementTree as ET
 from flask import Flask
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
@@ -28,6 +30,87 @@ intents.reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
+DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
+LAST_VIDEO_ID = None
+
+@tasks.loop(minutes=10)
+async def check_youtube():
+    global LAST_VIDEO_ID
+    await bot.wait_until_ready()
+    
+    channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
+    if not channel:
+        return
+
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    root = ET.fromstring(text)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+                    entry = root.find('atom:entry', ns)
+                    
+                    if entry is not None:
+                        video_id = entry.find('yt:videoId', ns).text
+                        title = entry.find('atom:title', ns).text
+                        link = entry.find('atom:link', ns).attrib['href']
+                        author = entry.find('atom:author/atom:name', ns).text
+                        
+                        if LAST_VIDEO_ID is None:
+                            LAST_VIDEO_ID = video_id
+                        elif video_id != LAST_VIDEO_ID:
+                            LAST_VIDEO_ID = video_id
+                            
+                            embed = discord.Embed(
+                                title=title,
+                                url=link,
+                                description=f"Nowy materiał na kanale **{author}**!",
+                                color=0x003399
+                            )
+                            embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
+                            
+                            await channel.send(content="Nowy film/stream od PlayStation Polska! 🎮", embed=embed)
+    except Exception as e:
+        print(f"Błąd podczas sprawdzania YouTube: {e}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def test_yt(ctx):
+    """Wymusza pobranie najnowszego filmu w celu przetestowania powiadomień."""
+    await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    root = ET.fromstring(text)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+                    entry = root.find('atom:entry', ns)
+                    
+                    if entry is not None:
+                        video_id = entry.find('yt:videoId', ns).text
+                        title = entry.find('atom:title', ns).text
+                        link = entry.find('atom:link', ns).attrib['href']
+                        author = entry.find('atom:author/atom:name', ns).text
+                        
+                        embed = discord.Embed(
+                            title=title,
+                            url=link,
+                            description=f"Nowy materiał na kanale **{author}**! (Wiadomość Testowa)",
+                            color=0x003399
+                        )
+                        embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
+                        
+                        await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
+                    else:
+                        await ctx.send("Nie znaleziono materiałów.")
+    except Exception as e:
+        await ctx.send(f"Wystąpił błąd: {e}")
+
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
@@ -48,6 +131,8 @@ def has_delete_role():
 @bot.event
 async def on_ready():
     print(f'Bot działa jako {bot.user}')
+    if not check_youtube.is_running():
+        check_youtube.start()
 
 # --- KOMENDA DO TWORZENIA RANG ---
 @bot.command()
