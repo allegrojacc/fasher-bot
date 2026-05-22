@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands, tasks
 import aiohttp
 import xml.etree.ElementTree as ET
+import itertools
 from flask import Flask
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
@@ -33,16 +34,46 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
 LAST_VIDEO_ID = None
+IS_LIVE_NOW = False
+
+statuses = itertools.cycle([
+    discord.Game("Gram na PlayStation"),
+    discord.Activity(type=discord.ActivityType.watching, name="najnowsze filmy PlayStation Polska"),
+    discord.Activity(type=discord.ActivityType.listening, name="Twoich linków... to znaczy muzyki"),
+    discord.Activity(type=discord.ActivityType.watching, name="redleefox'a przez okno"),
+])
+
+@tasks.loop(minutes=2)
+async def change_status():
+    global IS_LIVE_NOW
+    await bot.wait_until_ready()
+    
+    if IS_LIVE_NOW:
+        await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="🔴 LIVE PlayStation Polska"))
+    else:
+        await bot.change_presence(activity=next(statuses))
 
 @tasks.loop(minutes=10)
 async def check_youtube():
-    global LAST_VIDEO_ID
+    global LAST_VIDEO_ID, IS_LIVE_NOW
     await bot.wait_until_ready()
     
     channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
     if not channel:
         return
 
+    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow)
+    live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(live_url) as live_response:
+                if live_response.status == 200:
+                    live_text = await live_response.text()
+                    IS_LIVE_NOW = '"isLiveNow":true' in live_text or '"isLiveNow": true' in live_text
+    except Exception as e:
+        print(f"Błąd sprawdzania statusu LIVE: {e}")
+
+    # Sprawdzanie RSS dla nowych filmów/powiadomień
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -133,6 +164,8 @@ async def on_ready():
     print(f'Bot działa jako {bot.user}')
     if not check_youtube.is_running():
         check_youtube.start()
+    if not change_status.is_running():
+        change_status.start()
 
 # --- KOMENDA DO TWORZENIA RANG ---
 @bot.command()
