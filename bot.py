@@ -53,7 +53,7 @@ async def change_status():
     else:
         await bot.change_presence(activity=next(statuses))
 
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=2)
 async def check_youtube():
     global LAST_VIDEO_ID, IS_LIVE_NOW
     await bot.wait_until_ready()
@@ -69,7 +69,19 @@ async def check_youtube():
             async with session.get(live_url) as live_response:
                 if live_response.status == 200:
                     live_text = await live_response.text()
-                    IS_LIVE_NOW = '"isLiveNow":true' in live_text or '"isLiveNow": true' in live_text
+                    is_currently_live = '"isLiveNow":true' in live_text or '"isLiveNow": true' in live_text
+                    
+                    # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
+                    if is_currently_live and not IS_LIVE_NOW:
+                        embed = discord.Embed(
+                            title="🔴 PlayStation Polska jest NA ŻYWO!",
+                            description="Transmisja właśnie się rozpoczęła. Wpadajcie oglądać!",
+                            url=live_url,
+                            color=0xFF0000 # Czerwony kolor dla LIVE
+                        )
+                        await channel.send(content="Haloo! Właśnie odpalił się stream! 🎮", embed=embed)
+                    
+                    IS_LIVE_NOW = is_currently_live
     except Exception as e:
         print(f"Błąd sprawdzania statusu LIVE: {e}")
 
