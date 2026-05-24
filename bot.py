@@ -155,7 +155,7 @@ async def test_yt(ctx):
         await ctx.send(f"Wystąpił błąd: {e}")
 
 
-# --- SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
+# --- NOWY SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|fb\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
@@ -165,13 +165,13 @@ def convert_url(url: str) -> str:
     # 1. Wywalamy śmieci śledzące z aplikacji mobilnych (mibextid, rdid, ref itp.)
     url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch|ref)=[^&\s]+', '', url)
     
-    # 2. FIX MOBILNYCH SHARE (Wszystkie wideo i reelsy z telefonu lecą na jednolity format /reel/ID)
+    # 2. FIX MOBILNYCH SHARE (Wszystko co ma share/v/ albo share/r/ leci BEZPOŚREDNIO na /reel/ID)
     url = re.sub(r'/share/[vr]/([^/\s\?]+)', r'/reel/\1', url, flags=re.IGNORECASE)
     
     # Jeśli to share/p/ (zwykłe posty tekstowe/graficzne) -> permalink
     url = re.sub(r'/share/p/([^/\s\?]+)', r'/permalink.php?story_fbid=\1', url, flags=re.IGNORECASE)
 
-    # 3. Podmiana domen na odpowiedniki generujące poprawne embedy na Discordzie
+    # 3. Podmiana domen na wersje z fixami embedów na Discordzie
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
@@ -262,7 +262,6 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        # Konwersja odbywa się błyskawicznie lokalnie za pomocą regexów
         fixed = convert_url(url)
         
         if fixed not in seen:
@@ -353,10 +352,8 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Serwer webowy w tle dla Render / UptimeRobot
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Odpalenie bota
     bot.run(TOKEN)
