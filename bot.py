@@ -154,17 +154,40 @@ async def test_yt(ctx):
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
+
+# --- NOWY SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am)/[^\s<>]+',
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|fb\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
+async def unshorten_fb_url(url: str) -> str:
+    """Rozwija skrócone mobilne linki typu facebook.com/share/ do pełnych adresów."""
+    if "/share/" in url.lower() or "fb.com" in url.lower():
+        try:
+            # allow_redirects=False przechwytuje nagłówek Location bez wchodzenia na stronę logowania FB
+            async with aiohttp.ClientSession() as session:
+                async with session.head(url, allow_redirects=False, timeout=5) as response:
+                    if response.status in (301, 302, 307, 308):
+                        location = response.headers.get('Location')
+                        if location:
+                            if location.startswith('/'):
+                                return f"https://www.facebook.com{location}"
+                            return location
+        except Exception as e:
+            print(f"Błąd podczas rozwijania linku FB: {e}")
+    return url
+
 def convert_url(url: str) -> str:
+    # Wycinamy zbędne parametry śledzące z aplikacji mobilnych (np. mibextid, rdid)
+    url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch)=[^&\s]+', '', url)
+    
+    # Podmiana domen na odpowiedniki generujące poprawne embedy
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?facebook\.com/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?fb\.watch/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
+    url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
+
 
 def has_delete_role():
     async def predicate(ctx):
@@ -233,7 +256,7 @@ async def usun_wiadomosci(ctx, *message_ids: int):
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5)
 
 
-# --- OBSŁUGA LINKÓW ---
+# --- OBSŁUGA EVENTU WIADOMOŚCI ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -249,7 +272,12 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        fixed = convert_url(url)
+        # 1. Asynchroniczne sprawdzanie i rozwijanie linku, jeśli to skrócony FB (/share/)
+        resolved_url = await unshorten_fb_url(url)
+        
+        # 2. Czyszczenie i nakładanie fixów embedów na docelowy URL
+        fixed = convert_url(resolved_url)
+        
         if fixed not in seen:
             seen.add(fixed)
             responses.append(f"{message.author.display_name} wysyła link:\n{fixed}")
@@ -279,24 +307,20 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except:
         return
 
-    # Sprawdzamy czy to wiadomość bota i czy ma nasz tekst o rangach
     if message.author != bot.user or not message.embeds:
         return
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
 
-    # Szukamy klikniętej emotki w tekście embeda
     emoji_str = str(payload.emoji)
     for line in embed.description.split('\n'):
         if line.startswith(emoji_str):
-            # Wyciągamy ID roli z tekstu (np. <@&123456789>)
             match = re.search(r'<@&(\d+)>', line)
             if match:
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    # Dodajemy rolę użytkownikowi
                     member = guild.get_member(payload.user_id)
                     if not member:
                         member = await guild.fetch_member(payload.user_id)
@@ -330,7 +354,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    # Zabieramy rolę użytkownikowi
                     member = guild.get_member(payload.user_id)
                     if not member:
                         try:
@@ -343,7 +366,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Uruchamiamy serwer webowy w tle
+    # Uruchamiamy serwer webowy w tle (dla Render i UptimeRobot)
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
