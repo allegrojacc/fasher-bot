@@ -155,7 +155,7 @@ async def test_yt(ctx):
         await ctx.send(f"Wystąpił błąd: {e}")
 
 
-# --- NOWY SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
+# --- SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|fb\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
@@ -165,11 +165,10 @@ def convert_url(url: str) -> str:
     # 1. Wywalamy śmieci śledzące z aplikacji mobilnych (mibextid, rdid, ref itp.)
     url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch|ref)=[^&\s]+', '', url)
     
-    # 2. FIX MOBILNYCH SHARE (v = video, r = reels)
-    # Przebudowujemy strukturę /share/v/ID na format /watch?v=ID, który fixacebook bez problemu łapie
-    url = re.sub(r'/share/[vr]/([^/\s\?]+)', r'/watch?v=\1', url, flags=re.IGNORECASE)
+    # 2. FIX MOBILNYCH SHARE (Wszystkie wideo i reelsy z telefonu lecą na jednolity format /reel/ID)
+    url = re.sub(r'/share/[vr]/([^/\s\?]+)', r'/reel/\1', url, flags=re.IGNORECASE)
     
-    # Przebudowujemy strukturę /share/p/ID (zwykłe posty tekstowe/graficzne) na permalink
+    # Jeśli to share/p/ (zwykłe posty tekstowe/graficzne) -> permalink
     url = re.sub(r'/share/p/([^/\s\?]+)', r'/permalink.php?story_fbid=\1', url, flags=re.IGNORECASE)
 
     # 3. Podmiana domen na odpowiedniki generujące poprawne embedy na Discordzie
@@ -263,7 +262,7 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        # Konwersja lokalna za pomocą regexów – bez odpytywania sieci
+        # Konwersja odbywa się błyskawicznie lokalnie za pomocą regexów
         fixed = convert_url(url)
         
         if fixed not in seen:
@@ -278,7 +277,7 @@ async def on_message(message: discord.Message):
             pass
 
 
-# --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
+# --- SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
@@ -354,10 +353,10 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Uruchamiamy serwer webowy w tle
+    # Serwer webowy w tle dla Render / UptimeRobot
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Uruchamiamy bota
+    # Odpalenie bota
     bot.run(TOKEN)
