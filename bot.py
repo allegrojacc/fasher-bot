@@ -3,6 +3,7 @@ import re
 import threading
 import discord
 from discord.ext import commands, tasks
+from discord.ext.commands import BadArgument 
 import aiohttp
 import xml.etree.ElementTree as ET
 import itertools
@@ -231,6 +232,62 @@ async def usun_wiadomosci(ctx, *message_ids: int):
             return
 
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5)
+
+
+# --- EDYTOWANIE WIADOMOŚCI BOTA PO ID (NOWA KOMENDA) ---
+@bot.command(name="ew")
+@has_delete_role()
+async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
+    """Edytuje treść wiadomości wysłanej przez bota.
+    Przykład: !ew 123456789012345678 Tutaj wpisz poprawiony tekst i link...
+    """
+    if not nowa_tresc:
+        await ctx.send("Musisz podać nową treść wiadomości po ID!", delete_after=5)
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+        return
+
+    try:
+        # Pobieranie wiadomości z kanału, na którym wpisano komendę
+        msg = await ctx.channel.fetch_message(message_id)
+        
+        # Blokada przed edytowaniem wiadomości innych użytkowników
+        if msg.author != bot.user:
+            await ctx.send("Mogę edytować wyłącznie wiadomości mojego autorstwa!", delete_after=5)
+            try:
+                await ctx.message.delete()
+            except:
+                pass
+            return
+
+        # Podmiana tekstu
+        await msg.edit(content=nowa_tresc)
+        await ctx.send("Wiadomość została zaktualizowana.", delete_after=3)
+        
+        # Sprzątanie komendy moderatora
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+
+    except discord.NotFound:
+        await ctx.send("Nie znalazłem wiadomości o takim ID na tym kanale.", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send("Nie mam uprawnień do wykonania tej operacji.", delete_after=5)
+    except discord.HTTPException:
+        await ctx.send("Wystąpił nieoczekiwany błąd Discorda.", delete_after=5)
+
+# Error handler dla nowej komendy, gdyby ktoś podał tekst zamiast ID w argumencie liczbowym
+@edytuj_wiadomosc.error
+async def edytuj_wiadomosc_error(ctx, error):
+    if isinstance(error, BadArgument):
+        await ctx.send("Błędny format ID. Poprawny wzór: `!ew [ID_wiadomości] [nowy tekst]`", delete_after=6)
+        try:
+            await ctx.message.delete()
+        except:
+            pass
 
 
 # --- OBSŁUGA LINKÓW ---
