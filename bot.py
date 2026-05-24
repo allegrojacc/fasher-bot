@@ -155,48 +155,28 @@ async def test_yt(ctx):
         await ctx.send(f"Wystąpił błąd: {e}")
 
 
-# --- SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
+# --- NOWY SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|fb\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
-async def unshorten_fb_url(url: str) -> str:
-    """Rozwija skrócone mobilne linki typu facebook.com/share/ wyciągając URL z kodu HTML."""
-    if "/share/" in url.lower() or "fb.com" in url.lower():
-        try:
-            # Dorzucamy User-Agent, żeby FB nie odrzucił połączenia bota
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=5) as response:
-                    if response.status == 200:
-                        # Pobieramy tylko pierwsze 4000 bajtów kodu, żeby zaoszczędzić RAM/transfer na Renderze
-                        html_start = await response.content.read(4000)
-                        html_text = html_start.decode('utf-8', errors='ignore')
-                        
-                        # Szukamy oryginalnego, długiego linku zaszytego w meta tagu og:url
-                        match = re.search(r'<meta\s+property="og:url"\s+content="([^"]+)"', html_text)
-                        if match:
-                            return match.group(1)
-                            
-                        # Alternatywny regex ratunkowy
-                        match_alt = re.search(r'href="([^"]+)"', html_text)
-                        if match_alt and "facebook.com/" in match_alt.group(1):
-                            return match_alt.group(1)
-        except Exception as e:
-            print(f"Błąd podczas rozwijania linku FB: {e}")
-    return url
-
 def convert_url(url: str) -> str:
-    # Wywalamy śmieci śledzące z aplikacji (mibextid, rdid itp.)
-    url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch)=[^&\s]+', '', url)
+    # 1. Wywalamy śmieci śledzące z aplikacji mobilnych (mibextid, rdid, ref itp.)
+    url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch|ref)=[^&\s]+', '', url)
     
-    # Zamiana na domeny generujące poprawne embedy
+    # 2. FIX MOBILNYCH SHARE (v = video, r = reels)
+    # Przebudowujemy strukturę /share/v/ID na format /watch?v=ID, który fixacebook bez problemu łapie
+    url = re.sub(r'/share/[vr]/([^/\s\?]+)', r'/watch?v=\1', url, flags=re.IGNORECASE)
+    
+    # Przebudowujemy strukturę /share/p/ID (zwykłe posty tekstowe/graficzne) na permalink
+    url = re.sub(r'/share/p/([^/\s\?]+)', r'/permalink.php?story_fbid=\1', url, flags=re.IGNORECASE)
+
+    # 3. Podmiana domen na odpowiedniki generujące poprawne embedy na Discordzie
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
+    
     return url
 
 
@@ -283,11 +263,8 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        # 1. Pobieramy początek kodu HTML strony i wyciągamy pełny URL ukryty za /share/
-        resolved_url = await unshorten_fb_url(url)
-        
-        # 2. Czyścimy parametry trackingowe i podmieniamy domenę na fixacebook
-        fixed = convert_url(resolved_url)
+        # Konwersja lokalna za pomocą regexów – bez odpytywania sieci
+        fixed = convert_url(url)
         
         if fixed not in seen:
             seen.add(fixed)
@@ -301,7 +278,7 @@ async def on_message(message: discord.Message):
             pass
 
 
-# --- SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
+# --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
@@ -377,10 +354,10 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Serwer pod UptimeRobot i Rendera
+    # Uruchamiamy serwer webowy w tle
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Odpalenie bota
+    # Uruchamiamy bota
     bot.run(TOKEN)
