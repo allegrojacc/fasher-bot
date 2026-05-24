@@ -155,34 +155,45 @@ async def test_yt(ctx):
         await ctx.send(f"Wystąpił błąd: {e}")
 
 
-# --- NOWY SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
+# --- SYSTEM OBSŁUGI I NAPRAWY LINKÓW ---
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|fb\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
 async def unshorten_fb_url(url: str) -> str:
-    """Rozwija skrócone mobilne linki typu facebook.com/share/ do pełnych adresów."""
+    """Rozwija skrócone mobilne linki typu facebook.com/share/ wyciągając URL z kodu HTML."""
     if "/share/" in url.lower() or "fb.com" in url.lower():
         try:
-            # allow_redirects=False przechwytuje nagłówek Location bez wchodzenia na stronę logowania FB
-            async with aiohttp.ClientSession() as session:
-                async with session.head(url, allow_redirects=False, timeout=5) as response:
-                    if response.status in (301, 302, 307, 308):
-                        location = response.headers.get('Location')
-                        if location:
-                            if location.startswith('/'):
-                                return f"https://www.facebook.com{location}"
-                            return location
+            # Dorzucamy User-Agent, żeby FB nie odrzucił połączenia bota
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        # Pobieramy tylko pierwsze 4000 bajtów kodu, żeby zaoszczędzić RAM/transfer na Renderze
+                        html_start = await response.content.read(4000)
+                        html_text = html_start.decode('utf-8', errors='ignore')
+                        
+                        # Szukamy oryginalnego, długiego linku zaszytego w meta tagu og:url
+                        match = re.search(r'<meta\s+property="og:url"\s+content="([^"]+)"', html_text)
+                        if match:
+                            return match.group(1)
+                            
+                        # Alternatywny regex ratunkowy
+                        match_alt = re.search(r'href="([^"]+)"', html_text)
+                        if match_alt and "facebook.com/" in match_alt.group(1):
+                            return match_alt.group(1)
         except Exception as e:
             print(f"Błąd podczas rozwijania linku FB: {e}")
     return url
 
 def convert_url(url: str) -> str:
-    # Wycinamy zbędne parametry śledzące z aplikacji mobilnych (np. mibextid, rdid)
+    # Wywalamy śmieci śledzące z aplikacji (mibextid, rdid itp.)
     url = re.sub(r'[\?&](?:mibextid|rdid|share_url_user_id|substory_index|ch)=[^&\s]+', '', url)
     
-    # Podmiana domen na odpowiedniki generujące poprawne embedy
+    # Zamiana na domeny generujące poprawne embedy
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
@@ -272,10 +283,10 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        # 1. Asynchroniczne sprawdzanie i rozwijanie linku, jeśli to skrócony FB (/share/)
+        # 1. Pobieramy początek kodu HTML strony i wyciągamy pełny URL ukryty za /share/
         resolved_url = await unshorten_fb_url(url)
         
-        # 2. Czyszczenie i nakładanie fixów embedów na docelowy URL
+        # 2. Czyścimy parametry trackingowe i podmieniamy domenę na fixacebook
         fixed = convert_url(resolved_url)
         
         if fixed not in seen:
@@ -290,7 +301,7 @@ async def on_message(message: discord.Message):
             pass
 
 
-# --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
+# --- SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id:
@@ -366,10 +377,10 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Uruchamiamy serwer webowy w tle (dla Render i UptimeRobot)
+    # Serwer pod UptimeRobot i Rendera
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Uruchamiamy bota
+    # Odpalenie bota
     bot.run(TOKEN)
