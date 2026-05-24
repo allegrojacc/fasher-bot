@@ -3,7 +3,7 @@ import re
 import threading
 import discord
 from discord.ext import commands, tasks
-from discord.ext.commands import BadArgument 
+from discord.ext.commands import BadArgument
 import aiohttp
 import xml.etree.ElementTree as ET
 import itertools
@@ -162,8 +162,6 @@ URL_PATTERN = re.compile(
 
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?facebook\.com/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?fb\.watch/', 'https://fixacebook.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
@@ -234,13 +232,10 @@ async def usun_wiadomosci(ctx, *message_ids: int):
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5)
 
 
-# --- EDYTOWANIE WIADOMOŚCI BOTA PO ID (NOWA KOMENDA) ---
+# --- EDYTOWANIE WIADOMOŚCI BOTA PO ID ---
 @bot.command(name="ew")
 @has_delete_role()
 async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
-    """Edytuje treść wiadomości wysłanej przez bota.
-    Przykład: !ew 123456789012345678 Tutaj wpisz poprawiony tekst i link...
-    """
     if not nowa_tresc:
         await ctx.send("Musisz podać nową treść wiadomości po ID!", delete_after=5)
         try:
@@ -250,10 +245,8 @@ async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
         return
 
     try:
-        # Pobieranie wiadomości z kanału, na którym wpisano komendę
         msg = await ctx.channel.fetch_message(message_id)
         
-        # Blokada przed edytowaniem wiadomości innych użytkowników
         if msg.author != bot.user:
             await ctx.send("Mogę edytować wyłącznie wiadomości mojego autorstwa!", delete_after=5)
             try:
@@ -262,11 +255,9 @@ async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
                 pass
             return
 
-        # Podmiana tekstu
         await msg.edit(content=nowa_tresc)
         await ctx.send("Wiadomość została zaktualizowana.", delete_after=3)
         
-        # Sprzątanie komendy moderatora
         try:
             await ctx.message.delete()
         except:
@@ -279,7 +270,6 @@ async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
     except discord.HTTPException:
         await ctx.send("Wystąpił nieoczekiwany błąd Discorda.", delete_after=5)
 
-# Error handler dla nowej komendy, gdyby ktoś podał tekst zamiast ID w argumencie liczbowym
 @edytuj_wiadomosc.error
 async def edytuj_wiadomosc_error(ctx, error):
     if isinstance(error, BadArgument):
@@ -306,10 +296,18 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        fixed = convert_url(url)
-        if fixed not in seen:
-            seen.add(fixed)
-            responses.append(f"{message.author.display_name} wysyła link:\n{fixed}")
+        if "facebook.com" in url.lower() or "fb.watch" in url.lower():
+            if url not in seen:
+                seen.add(url)
+                responses.append(
+                    f"{message.author.display_name} wysyła link:\n{url}\n"
+                    f"⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
+                )
+        else:
+            fixed = convert_url(url)
+            if fixed not in seen:
+                seen.add(fixed)
+                responses.append(f"{message.author.display_name} wysyła link:\n{fixed}")
 
     if responses:
         await message.reply("\n\n".join(responses), mention_author=False)
@@ -336,24 +334,20 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     except:
         return
 
-    # Sprawdzamy czy to wiadomość bota i czy ma nasz tekst o rangach
     if message.author != bot.user or not message.embeds:
         return
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
 
-    # Szukamy klikniętej emotki w tekście embeda
     emoji_str = str(payload.emoji)
     for line in embed.description.split('\n'):
         if line.startswith(emoji_str):
-            # Wyciągamy ID roli z tekstu (np. <@&123456789>)
             match = re.search(r'<@&(\d+)>', line)
             if match:
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    # Dodajemy rolę użytkownikowi
                     member = guild.get_member(payload.user_id)
                     if not member:
                         member = await guild.fetch_member(payload.user_id)
@@ -387,7 +381,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    # Zabieramy rolę użytkownikowi
                     member = guild.get_member(payload.user_id)
                     if not member:
                         try:
@@ -400,10 +393,8 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    # Uruchamiamy serwer webowy w tle
     server_thread = threading.Thread(target=run_http_server)
     server_thread.daemon = True
     server_thread.start()
 
-    # Uruchamiamy bota
     bot.run(TOKEN)
