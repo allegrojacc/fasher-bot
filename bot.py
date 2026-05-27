@@ -63,14 +63,19 @@ async def check_youtube():
     if not channel:
         return
 
-    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow)
+    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow i unikanie zapowiedzi)
     live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(live_url) as live_response:
                 if live_response.status == 200:
                     live_text = await live_response.text()
-                    is_currently_live = '"isLive":true' in live_text or '"isLive": true' in live_text
+                    
+                    # Warunek: Musi być znacznik trwającego live i NIE może to być zapowiedź (UPCOMING)
+                    has_live_marker = '"isLiveNow":true' in live_text or '"LAUNCHED_STYLE_LIVE"' in live_text
+                    is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
+                    
+                    is_currently_live = has_live_marker and not is_upcoming
                     
                     # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
