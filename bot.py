@@ -301,18 +301,33 @@ async def on_message(message: discord.Message):
     seen = set()
 
     for url in urls:
-        if "facebook.com" in url.lower() or "fb.watch" in url.lower():
+        url_lower = url.lower()
+        
+        # 1. Określamy nazwę platformy na potrzeby tekstu w hiperłączu
+        if "x.com" in url_lower or "twitter.com" in url_lower:
+            platforma = "Twitter/X"
+        elif "instagram.com" in url_lower or "instagr.am" in url_lower:
+            platforma = "Instagram"
+        elif "facebook.com" in url_lower or "fb.watch" in url_lower:
+            platforma = "Facebook"
+        else:
+            platforma = "Social Media"
+
+        # 2. Tworzymy hiperłącza w formacie: [Nick wysyła link do Platforma](URL)
+        if platforma == "Facebook":
             if url not in seen:
                 seen.add(url)
+                hyperlink = f"[{message.author.display_name} wysyła link do {platforma}]({url})"
                 responses.append(
-                    f"{message.author.display_name} wysyła link:\n{url}\n"
+                    f"{hyperlink}\n"
                     f"⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
                 )
         else:
             fixed = convert_url(url)
             if fixed not in seen:
                 seen.add(fixed)
-                responses.append(f"{message.author.display_name} wysyła link:\n{fixed}")
+                hyperlink = f"[{message.author.display_name} wysyła link do {platforma}]({fixed})"
+                responses.append(hyperlink)
 
     if responses:
         await message.reply("\n\n".join(responses), mention_author=False)
