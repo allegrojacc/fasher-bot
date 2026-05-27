@@ -303,7 +303,7 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Określamy nazwę platformy na potrzeby tekstu w hiperłączu
+        # 1. Wykrywanie platformy
         if "x.com" in url_lower or "twitter.com" in url_lower:
             platforma = "Twitter/X"
         elif "instagram.com" in url_lower or "instagr.am" in url_lower:
@@ -313,20 +313,22 @@ async def on_message(message: discord.Message):
         else:
             platforma = "Social Media"
 
-        # 2. Tworzymy hiperłącza w formacie: [Nick wysyła link do Platforma](URL)
+        # 2. Formatowanie jako cytat (quote) z pogrubieniem i kursywą
         if platforma == "Facebook":
             if url not in seen:
                 seen.add(url)
-                hyperlink = f"[{message.author.display_name} wysyła link do {platforma}]({url})"
+                # Dodajemy '>' na początku, a pogrubienie obejmuje tekst "nick wysyła link do"
+                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({url})"
                 responses.append(
                     f"{hyperlink}\n"
-                    f"⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
+                    f"> ⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
                 )
         else:
             fixed = convert_url(url)
             if fixed not in seen:
                 seen.add(fixed)
-                hyperlink = f"[{message.author.display_name} wysyła link do {platforma}]({fixed})"
+                # Dokładnie taki format, o jaki prosiłeś
+                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
                 responses.append(hyperlink)
 
     if responses:
