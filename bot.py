@@ -80,12 +80,12 @@ async def check_youtube():
                     # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
                         embed = discord.Embed(
-                            title="🔴 PlayStation Polska jest NA ŻYWO!",
-                            description="Transmisja właśnie się rozpoczęła. Wpadajcie oglądać!",
+                            title="🔴 PlayStation Polska nadaje NA ŻYWO!",
+                            description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
                             url=live_url,
                             color=0xFF0000 # Czerwony kolor dla LIVE
                         )
-                        await channel.send(content="Haloo! Właśnie odpalił się stream! 🎮", embed=embed)
+                        await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
                     
                     IS_LIVE_NOW = is_currently_live
     except Exception as e:
@@ -121,7 +121,7 @@ async def check_youtube():
                             )
                             embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
                             
-                            await channel.send(content="Nowy film/stream od PlayStation Polska! 🎮", embed=embed)
+                            await channel.send(content="Nowy materiał wleciał na kanał PlayStation Polska!", embed=embed)
     except Exception as e:
         print(f"Błąd podczas sprawdzania YouTube: {e}")
 
