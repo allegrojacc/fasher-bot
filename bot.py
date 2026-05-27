@@ -26,7 +26,7 @@ def run_http_server():
 # --- GŁÓWNY KOD BOTA ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
-PROMO_CHANNEL_ID = 1321787613522427964  # ID jedynego kanału, na którym bot obsługuje linki
+PROMO_CHANNEL_ID = 1321787613522427964  # Na tym kanale działają promki z PS Store
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -66,6 +66,7 @@ async def check_youtube():
     if not channel:
         return
 
+    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow i unikanie zapowiedzi)
     live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
     try:
         async with aiohttp.ClientSession() as session:
@@ -73,17 +74,19 @@ async def check_youtube():
                 if live_response.status == 200:
                     live_text = await live_response.text()
                     
+                    # Warunek: Musi być znacznik trwającego live i NIE może to być zapowiedź (UPCOMING)
                     has_live_marker = '"isLiveNow":true' in live_text or '"LAUNCHED_STYLE_LIVE"' in live_text
                     is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
                     
                     is_currently_live = has_live_marker and not is_upcoming
                     
+                    # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
                         embed = discord.Embed(
                             title="🔴 PlayStation Polska nadaje NA ŻYWO!",
                             description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
                             url=live_url,
-                            color=0xFF0000
+                            color=0xFF0000 
                         )
                         await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
                     
@@ -91,6 +94,7 @@ async def check_youtube():
     except Exception as e:
         print(f"Błąd sprawdzania statusu LIVE: {e}")
 
+    # Sprawdzanie RSS dla nowych filmów/powiadomień
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -127,6 +131,7 @@ async def check_youtube():
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def test_yt(ctx):
+    """Wymusza pobranie najnowszego filmu w celu przetestowania powiadomień."""
     await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
@@ -152,25 +157,24 @@ async def test_yt(ctx):
                         )
                         embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
                         
-                        await ctx.send(content="Testowy Embed z newym filmem! 🎮", embed=embed)
+                        await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
                     else:
                         await ctx.send("Nie znaleziono materiałów.")
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
+# Wyłapuje społecznościówki oraz PlayStation Store
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
-
-# Wzorzec do wykrywania i usuwania emotek z Discorda <:nazwa:id> oraz standardowych emoji
-EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]+:[0-49]+>|[\u2600-\u27BF]|[\u1F300-\u1F9FF]', re.UNICODE)
 
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
+# Pobieranie ceny i tytułu gry bezpośrednio ze struktury danych JSON-LD sklepu Sony
 async def get_ps_game_details(url: str):
     nazwa = "Gra PlayStation"
     cena = "Sprawdź w sklepie"
@@ -232,6 +236,7 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
+    """Przykład: !setup_roles "Wybierz Role" 🎮 @Gracz 🎨 @Artysta"""
     if len(args) % 2 != 0:
         await ctx.send("Podaj pary: Emotka i Rola!")
         return
@@ -337,10 +342,6 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
-    # BLOKADA KANAŁU: Bot przetwarza linki TYLKO na wyznaczonym kanale promocyjnym
-    if message.channel.id != PROMO_CHANNEL_ID:
-        return
-
     urls = [match.group(0) for match in URL_PATTERN.finditer(message.content)]
     if not urls:
         return
@@ -353,16 +354,22 @@ async def on_message(message: discord.Message):
         
         # 1. Obsługa PlayStation Store
         if "store.playstation.com" in url_lower:
+            # POPRAWKA: Sprawdzamy ID kanału TYLKO dla linków z PS Store
+            if message.channel.id != PROMO_CHANNEL_ID:
+                continue  # Jeśli to inny kanał, ignorujemy ten link i idziemy dalej
+                
             if url not in seen:
                 seen.add(url)
                 
+                # Pobieramy automatycznie dane ze strony www
                 nazwa_gry, cena_gry = await get_ps_game_details(url)
                 
+                # Wzór: nick wysyła promke na nazwa gry w cenie cena
                 tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena_gry}"
                 hyperlink = f"> [**{tekst_promki}**]({url})"
                 responses.append(hyperlink)
 
-        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook)
+        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook) - Działa na całym serwerze!
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
@@ -372,9 +379,6 @@ async def on_message(message: discord.Message):
                 platforma = "Facebook"
             else:
                 platforma = "Social Media"
-
-            # Oczyszczamy treść wiadomości ze zbędnych emotek do końcowego wyświetlania
-            czysty_tekst_wiadomosci = EMOJI_PATTERN.sub('', message.content).replace(url, '').strip()
 
             if platforma == "Facebook":
                 if url not in seen:
@@ -392,7 +396,8 @@ async def on_message(message: discord.Message):
                     responses.append(hyperlink)
 
     if responses:
-        await message.reply("\n\n".join(responses), mention_author=False)
+        # Wysyłamy niezależny tekst przez send(), co usuwa powiadomienie o usunięciu wiadomości
+        await message.channel.send("\n\n".join(responses))
         try:
             await message.delete()
         except:
