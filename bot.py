@@ -1,6 +1,7 @@
 import os
 import re
 import threading
+import json
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import BadArgument
@@ -8,7 +9,7 @@ import aiohttp
 import xml.etree.ElementTree as ET
 import itertools
 from flask import Flask
-from bs4 import BeautifulSoup  # Biblioteka do wyciągania tytułu gry z PS Store
+from bs4 import BeautifulSoup
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
 app = Flask(__name__)
@@ -25,6 +26,7 @@ def run_http_server():
 # --- GŁÓWNY KOD BOTA ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
+PROMO_CHANNEL_ID = 1321787613522427964  # ID jedynego kanału, na którym bot obsługuje linki
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -64,7 +66,6 @@ async def check_youtube():
     if not channel:
         return
 
-    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow i unikanie zapowiedzi)
     live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
     try:
         async with aiohttp.ClientSession() as session:
@@ -72,19 +73,17 @@ async def check_youtube():
                 if live_response.status == 200:
                     live_text = await live_response.text()
                     
-                    # Warunek: Musi być znacznik trwającego live i NIE może to być zapowiedź (UPCOMING)
                     has_live_marker = '"isLiveNow":true' in live_text or '"LAUNCHED_STYLE_LIVE"' in live_text
                     is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
                     
                     is_currently_live = has_live_marker and not is_upcoming
                     
-                    # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
                         embed = discord.Embed(
                             title="🔴 PlayStation Polska nadaje NA ŻYWO!",
                             description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
                             url=live_url,
-                            color=0xFF0000 # Czerwony kolor dla LIVE
+                            color=0xFF0000
                         )
                         await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
                     
@@ -92,7 +91,6 @@ async def check_youtube():
     except Exception as e:
         print(f"Błąd sprawdzania statusu LIVE: {e}")
 
-    # Sprawdzanie RSS dla nowych filmów/powiadomień
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
         async with aiohttp.ClientSession() as session:
@@ -129,7 +127,6 @@ async def check_youtube():
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def test_yt(ctx):
-    """Wymusza pobranie najnowszego filmu w celu przetestowania powiadomień."""
     await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
@@ -155,41 +152,68 @@ async def test_yt(ctx):
                         )
                         embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
                         
-                        await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
+                        await ctx.send(content="Testowy Embed z newym filmem! 🎮", embed=embed)
                     else:
                         await ctx.send("Nie znaleziono materiałów.")
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
-# Zaktualizowany wzorzec - wyłapuje społecznościówki oraz PlayStation Store
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
+
+# Wzorzec do wykrywania i usuwania emotek z Discorda <:nazwa:id> oraz standardowych emoji
+EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]+:[0-49]+>|[\u2600-\u27BF]|[\u1F300-\u1F9FF]', re.UNICODE)
 
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# Funkcja pobierająca tytuł gry z kodu źródłowego PS Store
-async def get_ps_game_title(url: str) -> str:
+async def get_ps_game_details(url: str):
+    nazwa = "Gra PlayStation"
+    cena = "Sprawdź w sklepie"
+    
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "pl-PL,pl;q=0.9"
+            }
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
+                    
                     if soup.title and soup.title.string:
-                        title = soup.title.string
-                        # Odcinamy zbędny dopisek "| PlayStation" na końcu
-                        if "|" in title:
-                            title = title.split('|')[0].strip()
-                        return title
+                        title_str = soup.title.string
+                        if "|" in title_str:
+                            title_str = title_str.split('|')[0].strip()
+                        nazwa = title_str
+
+                    json_tag = soup.find("script", id="mfe-jsonld-tags") or soup.find("script", type="application/ld+json")
+                    if json_tag:
+                        data = json.loads(json_tag.string)
+                        offers = data.get("offers")
+                        if offers:
+                            raw_price = offers.get("price")
+                            currency = offers.get("priceCurrency", "PLN")
+                            
+                            if raw_price is not None:
+                                price_val = float(raw_price)
+                                if price_val == 0:
+                                    cena = "Bezpłatne"
+                                else:
+                                    price_str = f"{price_val:.2f}".replace('.', ',')
+                                    if currency == "PLN":
+                                        currency = "zł"
+                                    cena = f"{price_str} {currency}"
+
     except Exception as e:
-        print(f"Błąd podczas pobierania tytułu z PS Store: {e}")
-    return "Gra PlayStation"
+        print(f"Błąd podczas parsowania JSON-LD z PS Store: {e}")
+        
+    return nazwa, cena
 
 def has_delete_role():
     async def predicate(ctx):
@@ -208,7 +232,6 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
-    """Przykład: !setup_roles "Wybierz Role" 🎮 @Gracz 🎨 @Artysta"""
     if len(args) % 2 != 0:
         await ctx.send("Podaj pary: Emotka i Rola!")
         return
@@ -249,7 +272,7 @@ async def usun_wiadomosci(ctx, *message_ids: int):
         except discord.NotFound:
             not_found += 1
         except discord.Forbidden:
-            await ctx.send("Brak uprawnień do USAwania wiadomości.", delete_after=5)
+            await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
             return
         except discord.HTTPException:
             await ctx.send("Wystąpił błąd.", delete_after=5)
@@ -314,6 +337,10 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
+    # BLOKADA KANAŁU: Bot przetwarza linki TYLKO na wyznaczonym kanale promocyjnym
+    if message.channel.id != PROMO_CHANNEL_ID:
+        return
+
     urls = [match.group(0) for match in URL_PATTERN.finditer(message.content)]
     if not urls:
         return
@@ -324,22 +351,14 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store (Pobieranie nazwy gry i ceny)
+        # 1. Obsługa PlayStation Store
         if "store.playstation.com" in url_lower:
             if url not in seen:
                 seen.add(url)
                 
-                # Pobieramy oficjalną nazwę ze strony Sony
-                nazwa_gry = await get_ps_game_title(url)
+                nazwa_gry, cena_gry = await get_ps_game_details(url)
                 
-                # Wycinamy link, żeby została tylko cena i emotki dopisane przez gracza
-                tekst_bez_linku = message.content.replace(url, "").strip()
-                cena = tekst_bez_linku if tekst_bez_linku else "super cenie"
-                
-                # Nowa struktura: nick wysyła promke na nazwa gry w cenie cena
-                tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena}"
-                
-                # Budujemy hiperłącze jako cytat
+                tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena_gry}"
                 hyperlink = f"> [**{tekst_promki}**]({url})"
                 responses.append(hyperlink)
 
@@ -353,6 +372,9 @@ async def on_message(message: discord.Message):
                 platforma = "Facebook"
             else:
                 platforma = "Social Media"
+
+            # Oczyszczamy treść wiadomości ze zbędnych emotek do końcowego wyświetlania
+            czysty_tekst_wiadomosci = EMOJI_PATTERN.sub('', message.content).replace(url, '').strip()
 
             if platforma == "Facebook":
                 if url not in seen:
