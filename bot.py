@@ -129,7 +129,6 @@ async def check_youtube():
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def test_yt(ctx):
-    """Wymusza pobranie najnowszego filmu w celu przetestowania powiadomień."""
     await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
@@ -167,15 +166,12 @@ URL_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Wzorzec do czyszczenia standardowych emoji oraz niestandardowych emotek Discorda <:nazwa:id>
-EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]+:[0-9]+>|[\u2600-\u27BF]|[\u1F300-\u1F9FF]', re.UNICODE)
-
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# Zoptymalizowana funkcja pobierająca dane gry oraz ceny (standardową i PS Plus) ze sklepu Sony
+# NAPRAWIONA FUNKCJA: Wyciąga ceny bezpośrednio z obiektów CTA podanych w Twoim kodzie strony
 async def get_ps_game_details(url: str) -> tuple[str, str]:
     nazwa = "Gra PlayStation"
     cena_finalna = "Sprawdź w sklepie"
@@ -191,69 +187,46 @@ async def get_ps_game_details(url: str) -> tuple[str, str]:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # 1. Wyciągamy tytuł z tagu <title>
+                    # 1. Wyciągamy tytuł gry z tagu <title>
                     if soup.title and soup.title.string:
                         title_str = soup.title.string
                         if "|" in title_str:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Szukamy wszystkich skryptów konfiguracyjnych JSON
-                    cena_reg = None
-                    cena_plus = None
+                    # 2. Szukamy cen ukrytych w skryptach aplikacji Next.js
+                    znalezione_ceny = []
                     
-                    for script in soup.find_all("script", type="application/json"):
-                        if not script.string:
-                            continue
-                        
-                        script_content = script.string
-                        # Jeśli skrypt zawiera tablicę cenową SkuPriceDetail
-                        if "skuPriceDetail" in script_content:
-                            try:
-                                json_data = json.loads(script_content)
-                                # Szukamy głęboko w pamięci podręcznej (cache) Next.js
-                                cache = json_data.get("cache", {})
-                                for key, item in cache.items():
-                                    if isinstance(item, dict) and "skuPriceDetail" in item:
-                                        details = item.get("skuPriceDetail", [])
-                                        for d in details:
-                                            branding = d.get("offerBranding", "NONE")
-                                            formatted_price = d.get("discountPriceFormatted") or d.get("originalPriceFormatted")
-                                            
-                                            if formatted_price:
-                                                # Czyszczenie zapisu ceny ze spacji (np. "77,70 zl" -> "77,70 zł")
-                                                formatted_price = formatted_price.replace("zl", "zł").strip()
-                                                if branding == "PS_PLUS":
-                                                    cena_plus = formatted_price
-                                                else:
-                                                    cena_reg = formatted_price
-                            except Exception:
-                                pass
+                    # Wyrażenie regularne szuka sformatowanych cen w JSON (np. "77,70 zl" lub "51,80 zl")
+                    pattern_ceny = re.compile(r'"(?:discountPriceFormatted|finalPrice|priceOrText)"\s*:\s*"([^"]+)"')
+                    
+                    for script in soup.find_all("script"):
+                        if script.string and ("ctaWithPrice" in script.string or "UPSELL_PS_PLUS_DISCOUNT" in script.string):
+                            matches = pattern_ceny.findall(script.string)
+                            for price in matches:
+                                price_clean = price.replace("zl", "zł").strip()
+                                # Chcemy tylko unikalne wartości cyfrowe z walutą
+                                if price_clean and price_clean not in znalezione_ceny and "zł" in price_clean:
+                                    znalezione_ceny.append(price_clean)
 
-                    # 3. Jeśli nie znaleziono cen w cache, sprawdzamy standardowy tag ogólny ld+json
-                    if not cena_reg:
-                        json_tag = soup.find("script", id="mfe-jsonld-tags") or soup.find("script", type="application/ld+json")
-                        if json_tag:
-                            try:
-                                data = json.loads(json_tag.string)
-                                offers = data.get("offers")
-                                if offers:
-                                    raw_price = offers.get("price")
-                                    if raw_price is not None:
-                                        if float(raw_price) == 0:
-                                            cena_reg = "Bezpłatne"
-                                        else:
-                                            cena_reg = f"{float(raw_price):.2f}".replace('.', ',') + " zł"
-                            except Exception:
-                                pass
+                    # 3. Jeśli znaleźliśmy ceny, sortujemy je według wartości liczbowej
+                    if znalezione_ceny:
+                        # Pomocnicza funkcja do zamiany "77,70 zł" na liczbę 77.70 do poprawnego sortowania
+                        def przekształć_na_float(tekst_ceny):
+                            cyfry = re.findall(r'\d+,\d+|\d+', tekst_ceny)
+                            if cyfry:
+                                return float(cyfry[0].replace(',', '.'))
+                            return 0.0
 
-                    # Składamy końcowy tekst ceny
-                    if cena_reg and cena_plus and cena_reg != cena_plus:
-                        cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus ➕)"
-                    elif cena_reg:
-                        cena_finalna = cena_reg
-                    elif cena_plus:
-                        cena_finalna = f"{cena_plus} (Zniżka PS Plus ➕)"
+                        unikalne_ceny = sorted(list(set(znalezione_ceny)), key=przekształć_na_float, reverse=True)
+
+                        # Przypisujemy ceny na podstawie sortowania (wyższa to reg, niższa to Plus)
+                        if len(unikalne_ceny) >= 2:
+                            cena_reg = unikalne_ceny[0]
+                            cena_plus = unikalne_ceny[1]
+                            cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus ➕)"
+                        elif len(unikalne_ceny) == 1:
+                            cena_finalna = unikalne_ceny[0]
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
@@ -277,7 +250,6 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
-    """Przykład: !setup_roles "Wybierz Role" 🎮 @Gracz 🎨 @Artysta"""
     if len(args) % 2 != 0:
         await ctx.send("Podaj pary: Emotka i Rola!")
         return
@@ -318,7 +290,7 @@ async def usun_wiadomosci(ctx, *message_ids: int):
         except discord.NotFound:
             not_found += 1
         except discord.Forbidden:
-            await ctx.send("Brak uprawnień do USAwania wiadomości.", delete_after=5)
+            await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
             return
         except discord.HTTPException:
             await ctx.send("Wystąpił błąd.", delete_after=5)
@@ -393,18 +365,17 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store (Działa wyłącznie na wyznaczonym kanale promocyjnym)
+        # 1. Obsługa PlayStation Store
         if "store.playstation.com" in url_lower:
             if message.channel.id != PROMO_CHANNEL_ID:
-                continue  # Ignorujemy link do sklepu na innych kanałach, przechodzimy do kolejnych linków
+                continue
                 
             if url not in seen:
                 seen.add(url)
                 
-                # Pobieramy automatycznie dane (w tym potencjalną podwójną cenę PS Plus)
+                # Pobieramy automatycznie dane (w tym potencjalną cenę reg i PS Plus z CTA cache)
                 nazwa_gry, cena_gry = await get_ps_game_details(url)
                 
-                # Wzór: nick wysyła promke na nazwa gry w cenie cena
                 tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena_gry}"
                 hyperlink = f"> [**{tekst_promki}**]({url})"
                 responses.append(hyperlink)
@@ -436,7 +407,6 @@ async def on_message(message: discord.Message):
                     responses.append(hyperlink)
 
     if responses:
-        # Bezpieczne wysyłanie jako niezależny tekst bez błędu usuwania
         await message.channel.send("\n\n".join(responses))
         try:
             await message.delete()
