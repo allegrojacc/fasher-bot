@@ -8,6 +8,7 @@ import aiohttp
 import xml.etree.ElementTree as ET
 import itertools
 from flask import Flask
+from bs4 import BeautifulSoup  # Nowy import do wyciągania tytułu gry z PS Store
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
 app = Flask(__name__)
@@ -160,8 +161,9 @@ async def test_yt(ctx):
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
+# Zaktualizowany URL_PATTERN - teraz łapie też store.playstation.com
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am)/[^\s<>]+',
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
 
@@ -169,6 +171,25 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
+
+# Nowa funkcja pobierająca tytuł gry z kodu źródłowego PS Store
+async def get_ps_game_title(url: str) -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    if soup.title and soup.title.string:
+                        title = soup.title.string
+                        # Odcinamy zbędny dopisek "| PlayStation" na końcu, jeśli istnieje
+                        if "|" in title:
+                            title = title.split('|')[0].strip()
+                        return title
+    except Exception as e:
+        print(f"Błąd podczas pobierania tytułu z PS Store: {e}")
+    return "Gra PlayStation"
 
 def has_delete_role():
     async def predicate(ctx):
@@ -303,33 +324,47 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Wykrywanie platformy
-        if "x.com" in url_lower or "twitter.com" in url_lower:
-            platforma = "Twitter/X"
-        elif "instagram.com" in url_lower or "instagr.am" in url_lower:
-            platforma = "Instagram"
-        elif "facebook.com" in url_lower or "fb.watch" in url_lower:
-            platforma = "Facebook"
-        else:
-            platforma = "Social Media"
-
-        # 2. Formatowanie jako cytat (quote) z pogrubieniem i kursywą
-        if platforma == "Facebook":
+        # Nowość: Obsługa PlayStation Store
+        if "store.playstation.com" in url_lower:
             if url not in seen:
                 seen.add(url)
-                # Dodajemy '>' na początku, a pogrubienie obejmuje tekst "nick wysyła link do"
-                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({url})"
-                responses.append(
-                    f"{hyperlink}\n"
-                    f"> ⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
-                )
-        else:
-            fixed = convert_url(url)
-            if fixed not in seen:
-                seen.add(fixed)
-                # Dokładnie taki format, o jaki prosiłeś
-                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
+                
+                # Pobieramy nazwę gry ze sklepu
+                nazwa_gry = await get_ps_game_title(url)
+                
+                # Wyciągamy cenę (usuwamy link z wiadomości i bierzemy to co zostało)
+                tekst_bez_linku = message.content.replace(url, "").strip()
+                cena = tekst_bez_linku if tekst_bez_linku else "Sprawdź cenę"
+                
+                # Budujemy ładne hiperłącze jako cytat
+                hyperlink = f"> [**{nazwa_gry} – {cena}**]({url})"
                 responses.append(hyperlink)
+
+        # Tradycyjna obsługa Social Mediów (Twitter, Insta, FB)
+        else:
+            if "x.com" in url_lower or "twitter.com" in url_lower:
+                platforma = "Twitter/X"
+            elif "instagram.com" in url_lower or "instagr.am" in url_lower:
+                platforma = "Instagram"
+            elif "facebook.com" in url_lower or "fb.watch" in url_lower:
+                platforma = "Facebook"
+            else:
+                platforma = "Social Media"
+
+            if platforma == "Facebook":
+                if url not in seen:
+                    seen.add(url)
+                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({url})"
+                    responses.append(
+                        f"{hyperlink}\n"
+                        f"> ⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
+                    )
+            else:
+                fixed = convert_url(url)
+                if fixed not in seen:
+                    seen.add(fixed)
+                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
+                    responses.append(hyperlink)
 
     if responses:
         await message.reply("\n\n".join(responses), mention_author=False)
