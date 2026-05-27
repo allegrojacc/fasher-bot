@@ -74,13 +74,11 @@ async def check_youtube():
                 if live_response.status == 200:
                     live_text = await live_response.text()
                     
-                    # Warunek: Musi być znacznik trwającego live i NIE może to być zapowiedź (UPCOMING)
                     has_live_marker = '"isLiveNow":true' in live_text or '"LAUNCHED_STYLE_LIVE"' in live_text
                     is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
                     
                     is_currently_live = has_live_marker and not is_upcoming
                     
-                    # Jeśli stream właśnie się zaczął (wcześniej było False, a teraz True)
                     if is_currently_live and not IS_LIVE_NOW:
                         embed = discord.Embed(
                             title="🔴 PlayStation Polska nadaje NA ŻYWO!",
@@ -169,15 +167,18 @@ URL_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Wzorzec do czyszczenia standardowych emoji oraz niestandardowych emotek Discorda <:nazwa:id>
+EMOJI_PATTERN = re.compile(r'<a?:[a-zA-Z0-9_]+:[0-9]+>|[\u2600-\u27BF]|[\u1F300-\u1F9FF]', re.UNICODE)
+
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# Pobieranie ceny i tytułu gry bezpośrednio ze struktury danych JSON-LD sklepu Sony
-async def get_ps_game_details(url: str):
+# Zoptymalizowana funkcja pobierająca dane gry oraz ceny (standardową i PS Plus) ze sklepu Sony
+async def get_ps_game_details(url: str) -> tuple[str, str]:
     nazwa = "Gra PlayStation"
-    cena = "Sprawdź w sklepie"
+    cena_finalna = "Sprawdź w sklepie"
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -190,34 +191,74 @@ async def get_ps_game_details(url: str):
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
+                    # 1. Wyciągamy tytuł z tagu <title>
                     if soup.title and soup.title.string:
                         title_str = soup.title.string
                         if "|" in title_str:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    json_tag = soup.find("script", id="mfe-jsonld-tags") or soup.find("script", type="application/ld+json")
-                    if json_tag:
-                        data = json.loads(json_tag.string)
-                        offers = data.get("offers")
-                        if offers:
-                            raw_price = offers.get("price")
-                            currency = offers.get("priceCurrency", "PLN")
-                            
-                            if raw_price is not None:
-                                price_val = float(raw_price)
-                                if price_val == 0:
-                                    cena = "Bezpłatne"
-                                else:
-                                    price_str = f"{price_val:.2f}".replace('.', ',')
-                                    if currency == "PLN":
-                                        currency = "zł"
-                                    cena = f"{price_str} {currency}"
+                    # 2. Szukamy wszystkich skryptów konfiguracyjnych JSON
+                    cena_reg = None
+                    cena_plus = None
+                    
+                    for script in soup.find_all("script", type="application/json"):
+                        if not script.string:
+                            continue
+                        
+                        script_content = script.string
+                        # Jeśli skrypt zawiera tablicę cenową SkuPriceDetail
+                        if "skuPriceDetail" in script_content:
+                            try:
+                                json_data = json.loads(script_content)
+                                # Szukamy głęboko w pamięci podręcznej (cache) Next.js
+                                cache = json_data.get("cache", {})
+                                for key, item in cache.items():
+                                    if isinstance(item, dict) and "skuPriceDetail" in item:
+                                        details = item.get("skuPriceDetail", [])
+                                        for d in details:
+                                            branding = d.get("offerBranding", "NONE")
+                                            formatted_price = d.get("discountPriceFormatted") or d.get("originalPriceFormatted")
+                                            
+                                            if formatted_price:
+                                                # Czyszczenie zapisu ceny ze spacji (np. "77,70 zl" -> "77,70 zł")
+                                                formatted_price = formatted_price.replace("zl", "zł").strip()
+                                                if branding == "PS_PLUS":
+                                                    cena_plus = formatted_price
+                                                else:
+                                                    cena_reg = formatted_price
+                            except Exception:
+                                pass
+
+                    # 3. Jeśli nie znaleziono cen w cache, sprawdzamy standardowy tag ogólny ld+json
+                    if not cena_reg:
+                        json_tag = soup.find("script", id="mfe-jsonld-tags") or soup.find("script", type="application/ld+json")
+                        if json_tag:
+                            try:
+                                data = json.loads(json_tag.string)
+                                offers = data.get("offers")
+                                if offers:
+                                    raw_price = offers.get("price")
+                                    if raw_price is not None:
+                                        if float(raw_price) == 0:
+                                            cena_reg = "Bezpłatne"
+                                        else:
+                                            cena_reg = f"{float(raw_price):.2f}".replace('.', ',') + " zł"
+                            except Exception:
+                                pass
+
+                    # Składamy końcowy tekst ceny
+                    if cena_reg and cena_plus and cena_reg != cena_plus:
+                        cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus ➕)"
+                    elif cena_reg:
+                        cena_finalna = cena_reg
+                    elif cena_plus:
+                        cena_finalna = f"{cena_plus} (Zniżka PS Plus ➕)"
 
     except Exception as e:
-        print(f"Błąd podczas parsowania JSON-LD z PS Store: {e}")
+        print(f"Błąd podczas parsowania danych z PS Store: {e}")
         
-    return nazwa, cena
+    return nazwa, cena_finalna
 
 def has_delete_role():
     async def predicate(ctx):
@@ -277,7 +318,7 @@ async def usun_wiadomosci(ctx, *message_ids: int):
         except discord.NotFound:
             not_found += 1
         except discord.Forbidden:
-            await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
+            await ctx.send("Brak uprawnień do USAwania wiadomości.", delete_after=5)
             return
         except discord.HTTPException:
             await ctx.send("Wystąpił błąd.", delete_after=5)
@@ -352,16 +393,15 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store
+        # 1. Obsługa PlayStation Store (Działa wyłącznie na wyznaczonym kanale promocyjnym)
         if "store.playstation.com" in url_lower:
-            # POPRAWKA: Sprawdzamy ID kanału TYLKO dla linków z PS Store
             if message.channel.id != PROMO_CHANNEL_ID:
-                continue  # Jeśli to inny kanał, ignorujemy ten link i idziemy dalej
+                continue  # Ignorujemy link do sklepu na innych kanałach, przechodzimy do kolejnych linków
                 
             if url not in seen:
                 seen.add(url)
                 
-                # Pobieramy automatycznie dane ze strony www
+                # Pobieramy automatycznie dane (w tym potencjalną podwójną cenę PS Plus)
                 nazwa_gry, cena_gry = await get_ps_game_details(url)
                 
                 # Wzór: nick wysyła promke na nazwa gry w cenie cena
@@ -396,7 +436,7 @@ async def on_message(message: discord.Message):
                     responses.append(hyperlink)
 
     if responses:
-        # Wysyłamy niezależny tekst przez send(), co usuwa powiadomienie o usunięciu wiadomości
+        # Bezpieczne wysyłanie jako niezależny tekst bez błędu usuwania
         await message.channel.send("\n\n".join(responses))
         try:
             await message.delete()
