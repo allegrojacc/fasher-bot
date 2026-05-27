@@ -8,7 +8,7 @@ import aiohttp
 import xml.etree.ElementTree as ET
 import itertools
 from flask import Flask
-from bs4 import BeautifulSoup  # Nowy import do wyciągania tytułu gry z PS Store
+from bs4 import BeautifulSoup  # Biblioteka do wyciągania tytułu gry z PS Store
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
 app = Flask(__name__)
@@ -161,7 +161,7 @@ async def test_yt(ctx):
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
-# Zaktualizowany URL_PATTERN - teraz łapie też store.playstation.com
+# Zaktualizowany wzorzec - wyłapuje społecznościówki oraz PlayStation Store
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
@@ -172,7 +172,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# Nowa funkcja pobierająca tytuł gry z kodu źródłowego PS Store
+# Funkcja pobierająca tytuł gry z kodu źródłowego PS Store
 async def get_ps_game_title(url: str) -> str:
     try:
         async with aiohttp.ClientSession() as session:
@@ -183,7 +183,7 @@ async def get_ps_game_title(url: str) -> str:
                     soup = BeautifulSoup(html, 'html.parser')
                     if soup.title and soup.title.string:
                         title = soup.title.string
-                        # Odcinamy zbędny dopisek "| PlayStation" na końcu, jeśli istnieje
+                        # Odcinamy zbędny dopisek "| PlayStation" na końcu
                         if "|" in title:
                             title = title.split('|')[0].strip()
                         return title
@@ -249,7 +249,7 @@ async def usun_wiadomosci(ctx, *message_ids: int):
         except discord.NotFound:
             not_found += 1
         except discord.Forbidden:
-            await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5)
+            await ctx.send("Brak uprawnień do USAwania wiadomości.", delete_after=5)
             return
         except discord.HTTPException:
             await ctx.send("Wystąpił błąd.", delete_after=5)
@@ -324,23 +324,26 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # Nowość: Obsługa PlayStation Store
+        # 1. Obsługa PlayStation Store (Pobieranie nazwy gry i ceny)
         if "store.playstation.com" in url_lower:
             if url not in seen:
                 seen.add(url)
                 
-                # Pobieramy nazwę gry ze sklepu
+                # Pobieramy oficjalną nazwę ze strony Sony
                 nazwa_gry = await get_ps_game_title(url)
                 
-                # Wyciągamy cenę (usuwamy link z wiadomości i bierzemy to co zostało)
+                # Wycinamy link, żeby została tylko cena i emotki dopisane przez gracza
                 tekst_bez_linku = message.content.replace(url, "").strip()
-                cena = tekst_bez_linku if tekst_bez_linku else "Sprawdź cenę"
+                cena = tekst_bez_linku if tekst_bez_linku else "super cenie"
                 
-                # Budujemy ładne hiperłącze jako cytat
-                hyperlink = f"> [**{nazwa_gry} – {cena}**]({url})"
+                # Nowa struktura: nick wysyła promke na nazwa gry w cenie cena
+                tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena}"
+                
+                # Budujemy hiperłącze jako cytat
+                hyperlink = f"> [**{tekst_promki}**]({url})"
                 responses.append(hyperlink)
 
-        # Tradycyjna obsługa Social Mediów (Twitter, Insta, FB)
+        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook)
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
