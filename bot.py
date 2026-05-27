@@ -224,7 +224,7 @@ async def get_ps_game_details(url: str) -> tuple[str, str]:
                         if len(unikalne_ceny) >= 2:
                             cena_reg = unikalne_ceny[0]
                             cena_plus = unikalne_ceny[1]
-                            cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus ➕)"
+                            cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus)"
                         elif len(unikalne_ceny) == 1:
                             cena_finalna = unikalne_ceny[0]
 
