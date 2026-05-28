@@ -26,7 +26,12 @@ def run_http_server():
 # --- GŁÓWNY KOD BOTA ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
-PROMO_CHANNEL_ID = 1321787613522427964  # Na tym kanale działają promki z PS Store
+
+# Lista kanałów, na których bot przetwarza promocje z PS Store
+PROMO_CHANNELS = [
+    1321787613522427964,  # Główny kanał promek
+    1508226473176334366   # Nowy kanał testowy bota
+]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -171,10 +176,15 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# NAPRAWIONA FUNKCJA: Wyciąga ceny bezpośrednio z obiektów CTA podanych w Twoim kodzie strony
-async def get_ps_game_details(url: str) -> tuple[str, str]:
+# POPRAWIONA FUNKCJA: Ściąga teraz duże grafiki i czyste opisy bezpośrednio ze struktury Next.js i JSON-LD
+async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
-    cena_finalna = "Sprawdź w sklepie"
+    detale = {
+        "cena_reg": "Sprawdź w sklepie",
+        "cena_plus": None,
+        "image_url": None,
+        "description": "Brak opisu gry."
+    }
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -194,10 +204,20 @@ async def get_ps_game_details(url: str) -> tuple[str, str]:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Szukamy cen ukrytych w skryptach aplikacji Next.js
+                    # 2. Wyciągamy opis i obrazek w wysokiej rozdzielczości z tagu skryptu JSON-LD
+                    json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
+                    if json_ld_tag and json_ld_tag.string:
+                        try:
+                            data = json.loads(json_ld_tag.string)
+                            if "description" in data:
+                                detale["description"] = data["description"]
+                            if "image" in data:
+                                detale["image_url"] = data["image"]
+                        except Exception as json_err:
+                            print(f"Błąd parsowania JSON-LD: {json_err}")
+
+                    # 3. Szukamy cen ukrytych w skryptach aplikacji Next.js
                     znalezione_ceny = []
-                    
-                    # Wyrażenie regularne szuka sformatowanych cen w JSON (np. "77,70 zl" lub "51,80 zl")
                     pattern_ceny = re.compile(r'"(?:discountPriceFormatted|finalPrice|priceOrText)"\s*:\s*"([^"]+)"')
                     
                     for script in soup.find_all("script"):
@@ -205,13 +225,11 @@ async def get_ps_game_details(url: str) -> tuple[str, str]:
                             matches = pattern_ceny.findall(script.string)
                             for price in matches:
                                 price_clean = price.replace("zl", "zł").strip()
-                                # Chcemy tylko unikalne wartości cyfrowe z walutą
                                 if price_clean and price_clean not in znalezione_ceny and "zł" in price_clean:
                                     znalezione_ceny.append(price_clean)
 
-                    # 3. Jeśli znaleźliśmy ceny, sortujemy je według wartości liczbowej
+                    # 4. Sortowanie cen (wyższa regularna, niższa z PS Plus)
                     if znalezione_ceny:
-                        # Pomocnicza funkcja do zamiany "77,70 zł" na liczbę 77.70 do poprawnego sortowania
                         def przekształć_na_float(tekst_ceny):
                             cyfry = re.findall(r'\d+,\d+|\d+', tekst_ceny)
                             if cyfry:
@@ -220,18 +238,16 @@ async def get_ps_game_details(url: str) -> tuple[str, str]:
 
                         unikalne_ceny = sorted(list(set(znalezione_ceny)), key=przekształć_na_float, reverse=True)
 
-                        # Przypisujemy ceny na podstawie sortowania (wyższa to reg, niższa to Plus)
                         if len(unikalne_ceny) >= 2:
-                            cena_reg = unikalne_ceny[0]
-                            cena_plus = unikalne_ceny[1]
-                            cena_finalna = f"{cena_reg} ({cena_plus} z PS Plus)"
+                            detale["cena_reg"] = unikalne_ceny[0]
+                            detale["cena_plus"] = unikalne_ceny[1]
                         elif len(unikalne_ceny) == 1:
-                            cena_finalna = unikalne_ceny[0]
+                            detale["cena_reg"] = unikalne_ceny[0]
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
         
-    return nazwa, cena_finalna
+    return nazwa, detale
 
 def has_delete_role():
     async def predicate(ctx):
@@ -359,28 +375,56 @@ async def on_message(message: discord.Message):
     if not urls:
         return
 
-    responses = []
     seen = set()
 
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store
+        # 1. Obsługa PlayStation Store (Własny estetyczny Embed)
         if "store.playstation.com" in url_lower:
-            if message.channel.id != PROMO_CHANNEL_ID:
+            if message.channel.id not in PROMO_CHANNELS:
                 continue
                 
             if url not in seen:
                 seen.add(url)
                 
-                # Pobieramy automatycznie dane (w tym potencjalną cenę reg i PS Plus z CTA cache)
-                nazwa_gry, cena_gry = await get_ps_game_details(url)
+                # Usuwamy post użytkownika, aby zablokować domyślny podgląd PlayStation
+                try:
+                    await message.delete()
+                except:
+                    pass
                 
-                tekst_promki = f"{message.author.display_name} wysyła promke na {nazwa_gry} w cenie {cena_gry}"
-                hyperlink = f"> [**{tekst_promki}**]({url})"
-                responses.append(hyperlink)
+                # Ściągamy dane (Tytuł, ceny standard/plus, opis i dużą grafikę)
+                nazwa_gry, detale = await get_ps_game_details(url)
+                
+                # Generujemy dedykowany Embed
+                embed = discord.Embed(
+                    title=nazwa_gry,
+                    url=url,
+                    description=detale["description"],
+                    color=0x00439C  # Oficjalny niebieski kolor PlayStation
+                )
+                
+                # Dodajemy autora wrzutki z profilówką (bez pingu)
+                embed.set_author(
+                    name=f"Promka od: {message.author.display_name}", 
+                    icon_url=message.author.display_avatar.url
+                )
+                
+                # Dodajemy ładne formatowanie cen w polach inline
+                if detale["cena_plus"]:
+                    embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
+                    embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
+                else:
+                    embed.add_field(name="💰 Cena", value=f"**{detale['cena_reg']}**", inline=True)
+                
+                # Ładujemy główny obrazek gry na spód embedu
+                if detale["image_url"]:
+                    embed.set_image(url=detale["image_url"])
+                
+                await message.channel.send(embed=embed)
 
-        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook) - Działa na całym serwerze!
+        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook) - Działa na całego serwera!
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
@@ -395,23 +439,20 @@ async def on_message(message: discord.Message):
                 if url not in seen:
                     seen.add(url)
                     hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({url})"
-                    responses.append(
+                    await message.channel.send(
                         f"{hyperlink}\n"
                         f"> ⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
                     )
+                    try: await message.delete()
+                    except: pass
             else:
                 fixed = convert_url(url)
                 if fixed not in seen:
                     seen.add(fixed)
                     hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
-                    responses.append(hyperlink)
-
-    if responses:
-        await message.channel.send("\n\n".join(responses))
-        try:
-            await message.delete()
-        except:
-            pass
+                    await message.channel.send(hyperlink)
+                    try: await message.delete()
+                    except: pass
 
 
 # --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
