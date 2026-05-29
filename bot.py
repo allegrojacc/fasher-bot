@@ -176,7 +176,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# CHIRURGICZNA FUNKCJA: Filtruje po activeCtaId, odrzuca wersje próbne i skraca opis do max 160 znaków
+# ZAKTUALIZOWANA FUNKCJA: Ściąga prawidłowe ceny dla produktów z trialem i ignoruje tekst "Wersja próbna gry"
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -242,7 +242,7 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             text_content = script.string
                             
                             if active_cta_id and active_cta_id not in text_content:
-                                continue  # Pomijamy śmieci z innych edycji i dodatków dlc
+                                continue  # Pomijamy śmieci z innych edycji
                             
                             # Ignorujemy skrypty wersji próbnych (Trial) na poziomie struktury Next.js
                             if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
@@ -253,6 +253,7 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             
                             if base_match:
                                 temp_base = base_match.group(1).replace("zl", "zł").strip()
+                                # Odrzucamy tekstową cenę triala, ale pozwalamy na kwotę cyfrową
                                 if "Wersja" not in temp_base and "próbna" not in temp_base:
                                     cena_standardowa = temp_base
                                     
@@ -264,7 +265,8 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                                     else:
                                         cena_standardowa = stan_ceny
                             
-                            if active_cta_id:
+                            # Przerywamy pętlę tylko wtedy, gdy udało się wyciągnąć prawdziwą kwotę standardową
+                            if active_cta_id and cena_standardowa:
                                 break
 
                     # 4. Przypisywanie przefiltrowanych danych
