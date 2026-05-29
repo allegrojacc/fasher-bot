@@ -176,7 +176,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# POPRAWIONA FUNKCJA: Ściąga duże grafiki, opisy skrócone do 3 zdań i ignoruje nieaktywne ceny widma
+# NAJNOWSZA FUNKCJA: Wyciąga czyste etykiety cenowe, unika promek widm i skraca opis do 3 zdań
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -204,75 +204,54 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Wyciągamy opis (skrócony do 3 zdań) i obrazek z tagu skryptu JSON-LD
-                    cena_aktualna_str = None
+                    # 2. Opis (do 3 zdań) i obrazek z JSON-LD
                     json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
                     if json_ld_tag and json_ld_tag.string:
                         try:
                             data = json.loads(json_ld_tag.string)
                             if "description" in data:
                                 full_desc = data["description"]
-                                # Split po kropkach, ignorując te w liczbach (np. wersje gier)
                                 zdania = [z.strip() for z in re.split(r'\.(?!\d)', full_desc) if z.strip()]
                                 if len(zdania) > 3:
                                     detale["description"] = ". ".join(zdania[:3]) + "."
                                 else:
                                     detale["description"] = full_desc
-                                    
                             if "image" in data:
                                 detale["image_url"] = data["image"]
-                            
-                            # Wyciągamy cenę, która jest AKTUALNIE aktywna do zakupu
-                            if "offers" in data and "price" in data["offers"]:
-                                price_val = data["offers"]["price"]
-                                currency = data["offers"].get("priceCurrency", "zł")
-                                if currency == "PLN":
-                                    currency = "zł"
-                                cena_aktualna_str = f"{price_val:.2f}".replace('.', ',') + f" {currency}"
-                        except Exception as json_err:
-                            print(f"Błąd parsowania JSON-LD: {json_err}")
+                        except:
+                            pass
 
-                    # 3. Szukamy cen w skryptach Next.js (Twój algorytm), żeby znaleźć cenę reg (skreśloną)
-                    znalezione_ceny = []
-                    pattern_ceny = re.compile(r'"(?:discountPriceFormatted|finalPrice|priceOrText)"\s*:\s*"([^"]+)"')
-                    
+                    # 3. Precyzyjne wyciąganie cen na podstawie obiektów Next.js
+                    cena_standardowa = None
+                    cena_promocyjna_plus = None
+
                     for script in soup.find_all("script"):
-                        if script.string and ("ctaWithPrice" in script.string or "UPSELL_PS_PLUS_DISCOUNT" in script.string):
-                            matches = pattern_ceny.findall(script.string)
-                            for price in matches:
-                                price_clean = price.replace("zl", "zł").strip()
-                                if price_clean and price_clean not in znalezione_ceny and "zł" in price_clean:
-                                    znalezione_ceny.append(price_clean)
+                        if script.string and "ctaWithPrice" in script.string:
+                            text_content = script.string
+                            
+                            base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
+                            discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
+                            
+                            if base_match:
+                                cena_standardowa = base_match.group(1).replace("zl", "zł").strip()
+                            if discount_match:
+                                stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
+                                
+                                # Sprawdzamy czy ta zniżka to na pewno aktywny PS Plus
+                                if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
+                                    cena_promocyjna_plus = stan_ceny
+                                else:
+                                    # Zwykła promocja sklepu dla każdego
+                                    cena_standardowa = stan_ceny
 
-                    # Pomocnicza funkcja do sortowania cen po wartości liczbowej
-                    def przekształć_na_float(tekst_ceny):
-                        cyfry = re.findall(r'\d+,\d+|\d+', tekst_ceny)
-                        if cyfry:
-                            return float(cyfry[0].replace(',', '.'))
-                        return 0.0
-
-                    if znalezione_ceny:
-                        unikalne_ceny = sorted(list(set(znalezione_ceny)), key=przekształć_na_float, reverse=True)
+                    # 4. Bezpieczne przypisywanie danych bez zgadywania wielkości kwot
+                    if cena_standardowa:
+                        detale["cena_reg"] = cena_standardowa
+                    
+                    if cena_promocyjna_plus and cena_promocyjna_plus != cena_standardowa:
+                        detale["cena_plus"] = cena_promocyjna_plus
                     else:
-                        unikalne_ceny = []
-
-                    # 4. Weryfikacja ofert: Ustalamy ceny na podstawie tego, co naprawdę jest aktywne (JSON-LD)
-                    if cena_aktualna_str:
-                        float_aktualna = przekształć_na_float(cena_aktualna_str)
-                        
-                        # Jeśli w skryptach Next jest wyższa cena niż aktualna ostateczna, oznacza to AKTUALNĄ promocję
-                        if unikalne_ceny and przekształć_na_float(unikalne_ceny[0]) > float_aktualna:
-                            detale["cena_reg"] = unikalne_ceny[0]  # Wyższa cena jako regularna (skreślona)
-                            detale["cena_plus"] = cena_aktualna_str # Aktualna promocyjna (np. z PS Plus)
-                        else:
-                            detale["cena_reg"] = cena_aktualna_str
-                            detale["cena_plus"] = None
-                    else:
-                        if len(unikalne_ceny) >= 2:
-                            detale["cena_reg"] = unikalne_ceny[0]
-                            detale["cena_plus"] = unikalne_ceny[1]
-                        elif len(unikalne_ceny) == 1:
-                            detale["cena_reg"] = unikalne_ceny[0]
+                        detale["cena_plus"] = None
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
@@ -418,13 +397,13 @@ async def on_message(message: discord.Message):
             if url not in seen:
                 seen.add(url)
                 
-                # Kasujemy oryginalny wpis usera, by ukryć brzydki podgląd
+                # Kasujemy oryginalny wpis usera, by ukryć brzydki podgląd discorda
                 try:
                     await message.delete()
                 except:
                     pass
                 
-                # Zbieramy dane
+                # Zbieramy dane z nowej funkcji
                 nazwa_gry, detale = await get_ps_game_details(url)
                 
                 embed = discord.Embed(
@@ -440,7 +419,7 @@ async def on_message(message: discord.Message):
                     icon_url=message.author.display_avatar.url
                 )
                 
-                # Układ cen (jeśli promka z plusem wygasła, aktywuje się blok else i pokaże tylko bazową)
+                # Układ cen (jeśli promki z plusem nie ma, pokaże tylko jedną, aktualną cenę standardową)
                 if detale["cena_plus"]:
                     embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
                     embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
