@@ -176,7 +176,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# POPRAWIONA FUNKCJA: Ściąga teraz duże grafiki i czyste opisy bezpośrednio ze struktury Next.js i JSON-LD
+# POPRAWIONA FUNKCJA: Ściąga duże grafiki, opisy skrócone do 3 zdań i ignoruje nieaktywne ceny widma
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -197,26 +197,42 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # 1. Wyciągamy tytuł gry z tagu <title>
+                    # 1. Tytuł gry z tagu <title>
                     if soup.title and soup.title.string:
                         title_str = soup.title.string
                         if "|" in title_str:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Wyciągamy opis i obrazek w wysokiej rozdzielczości z tagu skryptu JSON-LD
+                    # 2. Wyciągamy opis (skrócony do 3 zdań) i obrazek z tagu skryptu JSON-LD
+                    cena_aktualna_str = None
                     json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
                     if json_ld_tag and json_ld_tag.string:
                         try:
                             data = json.loads(json_ld_tag.string)
                             if "description" in data:
-                                detale["description"] = data["description"]
+                                full_desc = data["description"]
+                                # Split po kropkach, ignorując te w liczbach (np. wersje gier)
+                                zdania = [z.strip() for z in re.split(r'\.(?!\d)', full_desc) if z.strip()]
+                                if len(zdania) > 3:
+                                    detale["description"] = ". ".join(zdania[:3]) + "."
+                                else:
+                                    detale["description"] = full_desc
+                                    
                             if "image" in data:
                                 detale["image_url"] = data["image"]
+                            
+                            # Wyciągamy cenę, która jest AKTUALNIE aktywna do zakupu
+                            if "offers" in data and "price" in data["offers"]:
+                                price_val = data["offers"]["price"]
+                                currency = data["offers"].get("priceCurrency", "zł")
+                                if currency == "PLN":
+                                    currency = "zł"
+                                cena_aktualna_str = f"{price_val:.2f}".replace('.', ',') + f" {currency}"
                         except Exception as json_err:
                             print(f"Błąd parsowania JSON-LD: {json_err}")
 
-                    # 3. Szukamy cen ukrytych w skryptach aplikacji Next.js
+                    # 3. Szukamy cen w skryptach Next.js (Twój algorytm), żeby znaleźć cenę reg (skreśloną)
                     znalezione_ceny = []
                     pattern_ceny = re.compile(r'"(?:discountPriceFormatted|finalPrice|priceOrText)"\s*:\s*"([^"]+)"')
                     
@@ -228,16 +244,30 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                                 if price_clean and price_clean not in znalezione_ceny and "zł" in price_clean:
                                     znalezione_ceny.append(price_clean)
 
-                    # 4. Sortowanie cen (wyższa regularna, niższa z PS Plus)
+                    # Pomocnicza funkcja do sortowania cen po wartości liczbowej
+                    def przekształć_na_float(tekst_ceny):
+                        cyfry = re.findall(r'\d+,\d+|\d+', tekst_ceny)
+                        if cyfry:
+                            return float(cyfry[0].replace(',', '.'))
+                        return 0.0
+
                     if znalezione_ceny:
-                        def przekształć_na_float(tekst_ceny):
-                            cyfry = re.findall(r'\d+,\d+|\d+', tekst_ceny)
-                            if cyfry:
-                                return float(cyfry[0].replace(',', '.'))
-                            return 0.0
-
                         unikalne_ceny = sorted(list(set(znalezione_ceny)), key=przekształć_na_float, reverse=True)
+                    else:
+                        unikalne_ceny = []
 
+                    # 4. Weryfikacja ofert: Ustalamy ceny na podstawie tego, co naprawdę jest aktywne (JSON-LD)
+                    if cena_aktualna_str:
+                        float_aktualna = przekształć_na_float(cena_aktualna_str)
+                        
+                        # Jeśli w skryptach Next jest wyższa cena niż aktualna ostateczna, oznacza to AKTUALNĄ promocję
+                        if unikalne_ceny and przekształć_na_float(unikalne_ceny[0]) > float_aktualna:
+                            detale["cena_reg"] = unikalne_ceny[0]  # Wyższa cena jako regularna (skreślona)
+                            detale["cena_plus"] = cena_aktualna_str # Aktualna promocyjna (np. z PS Plus)
+                        else:
+                            detale["cena_reg"] = cena_aktualna_str
+                            detale["cena_plus"] = None
+                    else:
                         if len(unikalne_ceny) >= 2:
                             detale["cena_reg"] = unikalne_ceny[0]
                             detale["cena_plus"] = unikalne_ceny[1]
@@ -388,16 +418,15 @@ async def on_message(message: discord.Message):
             if url not in seen:
                 seen.add(url)
                 
-                # Usuwamy post użytkownika, aby zablokować domyślny podgląd PlayStation
+                # Kasujemy oryginalny wpis usera, by ukryć brzydki podgląd
                 try:
                     await message.delete()
                 except:
                     pass
                 
-                # Ściągamy dane (Tytuł, ceny standard/plus, opis i dużą grafikę)
+                # Zbieramy dane
                 nazwa_gry, detale = await get_ps_game_details(url)
                 
-                # Generujemy dedykowany Embed
                 embed = discord.Embed(
                     title=nazwa_gry,
                     url=url,
@@ -405,26 +434,25 @@ async def on_message(message: discord.Message):
                     color=0x00439C  # Oficjalny niebieski kolor PlayStation
                 )
                 
-                # Dodajemy autora wrzutki z profilówką (bez pingu)
+                # Autor bez pingowania
                 embed.set_author(
                     name=f"Promka od: {message.author.display_name}", 
                     icon_url=message.author.display_avatar.url
                 )
                 
-                # Dodajemy ładne formatowanie cen w polach inline
+                # Układ cen (jeśli promka z plusem wygasła, aktywuje się blok else i pokaże tylko bazową)
                 if detale["cena_plus"]:
                     embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
                     embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
                 else:
                     embed.add_field(name="💰 Cena", value=f"**{detale['cena_reg']}**", inline=True)
                 
-                # Ładujemy główny obrazek gry na spód embedu
                 if detale["image_url"]:
                     embed.set_image(url=detale["image_url"])
                 
                 await message.channel.send(embed=embed)
 
-        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook) - Działa na całego serwera!
+        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook)
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
