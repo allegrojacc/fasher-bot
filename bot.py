@@ -176,7 +176,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# NAJNOWSZA FUNKCJA: Wyciąga czyste etykiety cenowe, unika promek widm i skraca opis do 3 zdań
+# CHIRURGICZNA FUNKCJA: Filtruje ceny po activeCtaId, unika bocznych edycji i skraca opis do 3 zdań
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -221,13 +221,26 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                         except:
                             pass
 
-                    # 3. Precyzyjne wyciąganie cen na podstawie obiektów Next.js
+                    # 3. Precyzyjne wyciąganie cen TYLKO dla aktywnej, głównej edycji gry
                     cena_standardowa = None
                     cena_promocyjna_plus = None
+                    active_cta_id = None
 
+                    # KROK A: Szukamy activeCtaId głównego produktu, żeby odciąć boczne edycje
+                    for script in soup.find_all("script"):
+                        if script.string and "activeCtaId" in script.string:
+                            cta_match = re.search(r'"activeCtaId"\s*:\s*"([^"]+)"', script.string)
+                            if cta_match:
+                                active_cta_id = cta_match.group(1)
+                                break
+
+                    # KROK B: Parsujemy ceny należące wyłącznie do aktywnego boku zakupowego
                     for script in soup.find_all("script"):
                         if script.string and "ctaWithPrice" in script.string:
                             text_content = script.string
+                            
+                            if active_cta_id and active_cta_id not in text_content:
+                                continue  # Bezpiecznie pomijamy śmieci z bocznych edycji ze screena
                             
                             base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
                             discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
@@ -237,14 +250,15 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             if discount_match:
                                 stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
                                 
-                                # Sprawdzamy czy ta zniżka to na pewno aktywny PS Plus
                                 if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
                                     cena_promocyjna_plus = stan_ceny
                                 else:
-                                    # Zwykła promocja sklepu dla każdego
                                     cena_standardowa = stan_ceny
+                            
+                            if active_cta_id:
+                                break
 
-                    # 4. Bezpieczne przypisywanie danych bez zgadywania wielkości kwot
+                    # 4. Przypisywanie przefiltrowanych danych
                     if cena_standardowa:
                         detale["cena_reg"] = cena_standardowa
                     
@@ -254,7 +268,7 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                         detale["cena_plus"] = None
 
     except Exception as e:
-        print(f"Błąd podczas parsowania danych z PS Store: {e}")
+        print(f"Błąd podczas parsing danych z PS Store: {e}")
         
     return nazwa, detale
 
@@ -397,13 +411,11 @@ async def on_message(message: discord.Message):
             if url not in seen:
                 seen.add(url)
                 
-                # Kasujemy oryginalny wpis usera, by ukryć brzydki podgląd discorda
                 try:
                     await message.delete()
                 except:
                     pass
                 
-                # Zbieramy dane z nowej funkcji
                 nazwa_gry, detale = await get_ps_game_details(url)
                 
                 embed = discord.Embed(
@@ -413,13 +425,11 @@ async def on_message(message: discord.Message):
                     color=0x00439C  # Oficjalny niebieski kolor PlayStation
                 )
                 
-                # Autor bez pingowania
                 embed.set_author(
                     name=f"Promka od: {message.author.display_name}", 
                     icon_url=message.author.display_avatar.url
                 )
                 
-                # Układ cen (jeśli promki z plusem nie ma, pokaże tylko jedną, aktualną cenę standardową)
                 if detale["cena_plus"]:
                     embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
                     embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
