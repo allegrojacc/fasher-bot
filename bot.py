@@ -176,7 +176,7 @@ def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
     return url
 
-# CHIRURGICZNA FUNKCJA: Filtruje ceny po activeCtaId, unika bocznych edycji i skraca opis do 3 zdań
+# CHIRURGICZNA FUNKCJA: Filtruje po activeCtaId, odrzuca wersje próbne i skraca opis do max 160 znaków
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -204,16 +204,18 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Opis (do 3 zdań) i obrazek z JSON-LD
+                    # 2. Opis (sztywne ucięcie do 160 znaków) i obrazek z JSON-LD
                     json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
                     if json_ld_tag and json_ld_tag.string:
                         try:
                             data = json.loads(json_ld_tag.string)
                             if "description" in data:
-                                full_desc = data["description"]
-                                zdania = [z.strip() for z in re.split(r'\.(?!\d)', full_desc) if z.strip()]
-                                if len(zdania) > 3:
-                                    detale["description"] = ". ".join(zdania[:3]) + "."
+                                full_desc = data["description"].strip()
+                                if len(full_desc) > 160:
+                                    truncated = full_desc[:160]
+                                    if " " in truncated:
+                                        truncated = truncated.rsplit(" ", 1)[0]
+                                    detale["description"] = truncated + "..."
                                 else:
                                     detale["description"] = full_desc
                             if "image" in data:
@@ -240,20 +242,27 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             text_content = script.string
                             
                             if active_cta_id and active_cta_id not in text_content:
-                                continue  # Bezpiecznie pomijamy śmieci z bocznych edycji ze screena
+                                continue  # Pomijamy śmieci z innych edycji i dodatków dlc
                             
+                            # Ignorujemy skrypty wersji próbnych (Trial) na poziomie struktury Next.js
+                            if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
+                                continue
+
                             base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
                             discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
                             
                             if base_match:
-                                cena_standardowa = base_match.group(1).replace("zl", "zł").strip()
+                                temp_base = base_match.group(1).replace("zl", "zł").strip()
+                                if "Wersja" not in temp_base and "próbna" not in temp_base:
+                                    cena_standardowa = temp_base
+                                    
                             if discount_match:
                                 stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
-                                
-                                if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
-                                    cena_promocyjna_plus = stan_ceny
-                                else:
-                                    cena_standardowa = stan_ceny
+                                if "Wersja" not in stan_ceny and "próbna" not in stan_ceny:
+                                    if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
+                                        cena_promocyjna_plus = stan_ceny
+                                    else:
+                                        cena_standardowa = stan_ceny
                             
                             if active_cta_id:
                                 break
@@ -268,7 +277,7 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                         detale["cena_plus"] = None
 
     except Exception as e:
-        print(f"Błąd podczas parsing danych z PS Store: {e}")
+        print(f"Błąd podczas parsowania danych z PS Store: {e}")
         
     return nazwa, detale
 
