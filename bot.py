@@ -320,7 +320,7 @@ async def setup_roles(ctx, title: str, *args):
         await msg.add_reaction(emoji)
 
 
-# --- USUWANIE WIADOMOŚCI PO ID (PRZESZUKIWANIE CAŁEGO SERWERA) ---
+# --- USUWANIE WIADOMOŚCI PO ID ---
 @bot.command(name="uw")
 @has_delete_role()
 @commands.bot_has_permissions(manage_messages=True)
@@ -328,63 +328,33 @@ async def usun_wiadomosci(ctx, *message_ids: int):
     deleted = 0
     not_found = 0
 
-    # Jeśli użytkownik zapomniał podać ID
-    if not message_ids:
-        await ctx.send("Podaj ID wiadomości do usunięcia. Przykład: `!uw 123456789012345678`", delete_after=8)
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-        return
-
-    # Usunięcie wiadomości z komendą moderatora (czyszczenie kanału modów)
+    # Najpierw usuwamy wiadomość użytkownika, który wpisał komendę !uw
     try:
         await ctx.message.delete()
     except:
         pass
 
-    # Pętla przetwarzająca każde podane ID wiadomości
+    if not message_ids:
+        # Wysyłanie w trybie silent (bez pingu)
+        await ctx.send("Podaj ID wiadomości do usunięcia. Przykład: `!uw 123456789012345678`", delete_after=8, silent=True)
+        return
+
     for msg_id in message_ids:
-        found = False
-        
-        # KROK 1: Próba znalezienia wiadomości na obecnym kanale 
         try:
             msg = await ctx.channel.fetch_message(msg_id)
             await msg.delete()
             deleted += 1
-            found = True
         except discord.NotFound:
-            pass  # Jeśli nie ma jej tutaj, szukamy dalej
-        except discord.Forbidden:
-            await ctx.send(f"Brak uprawnień do usunięcia wiadomości na tym kanale.", delete_after=5)
-            continue
-        except discord.HTTPException:
-            pass
-
-        # KROK 2: Jeśli nie znaleziono na kanale modów, przeszukaj cały serwer
-        if not found and ctx.guild:
-            for channel in ctx.guild.text_channels:
-                if channel == ctx.channel:
-                    continue  # Pomijamy kanał modów, bo już go sprawdziliśmy
-                
-                try:
-                    # Próba pobrania wiadomości z danego kanału
-                    msg = await channel.fetch_message(msg_id)
-                    await msg.delete()
-                    deleted += 1
-                    found = True
-                    break  # Znaleziono i usunięto! Kończymy szukanie dla tego konkretnego ID
-                except (discord.NotFound, discord.Forbidden):
-                    continue  # Brak wiadomości lub brak dostępu bota do kanału -> sprawdź kolejny kanał
-                except discord.HTTPException:
-                    continue
-
-        # Jeśli po przeszukaniu całego serwera bot nie znalazł wiadomości
-        if not found:
             not_found += 1
+        except discord.Forbidden:
+            await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5, silent=True)
+            return
+        except discord.HTTPException:
+            await ctx.send("Wystąpił błąd.", delete_after=5, silent=True)
+            return
 
-    # Wysłanie cichego podsumowania na kanale modów (znika po 5 sekundach)
-    await ctx.send(f"Wynik operacji: Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5)
+    # Raport końcowy również wysyłany jest w trybie silent
+    await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5, silent=True)
 
 
 # --- EDYTOWANIE WIADOMOŚCI BOTA PO ID ---
