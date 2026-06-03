@@ -46,10 +46,10 @@ LAST_VIDEO_ID = None
 IS_LIVE_NOW = False
 
 statuses = itertools.cycle([
-    discord.Game("Gram na PlayStation"),
-    discord.Activity(type=discord.ActivityType.watching, name="najnowsze filmy PlayStation Polska"),
-    discord.Activity(type=discord.ActivityType.listening, name="Twoich linków... to znaczy muzyki"),
-    discord.Activity(type=discord.ActivityType.watching, name="redleefox'a przez okno"),
+    discord.Game("God of War Laufey"),
+    discord.Game("Wolverine"),
+    discord.Game("Control Resonant"),
+    discord.Game("Grand Theft Auto VI"),
 ])
 
 @tasks.loop(minutes=2)
