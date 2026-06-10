@@ -42,7 +42,9 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
-LAST_VIDEO_ID = None
+
+SEEN_VIDEOS = set()
+YOUTUBE_INITIALIZED = False
 IS_LIVE_NOW = False
 
 statuses = itertools.cycle([
@@ -64,14 +66,14 @@ async def change_status():
 
 @tasks.loop(minutes=2)
 async def check_youtube():
-    global LAST_VIDEO_ID, IS_LIVE_NOW
+    global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW
     await bot.wait_until_ready()
     
     channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
     if not channel:
         return
 
-    # Sprawdzanie czy aktualnie trwa stream (wyszukiwanie flagi isLiveNow i unikanie zapowiedzi)
+    # Sprawdzanie czy aktualnie trwa stream
     live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
     try:
         async with aiohttp.ClientSession() as session:
@@ -79,7 +81,8 @@ async def check_youtube():
                 if live_response.status == 200:
                     live_text = await live_response.text()
                     
-                    has_live_marker = '"isLiveNow":true' in live_text or '"LAUNCHED_STYLE_LIVE"' in live_text
+                    # Bardziej rygorystyczne sprawdzanie obecności prawdziwego live
+                    has_live_marker = '"isLiveNow":true' in live_text and '"style":"LIVE"' in live_text
                     is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
                     
                     is_currently_live = has_live_marker and not is_upcoming
@@ -106,18 +109,34 @@ async def check_youtube():
                     text = await response.text()
                     root = ET.fromstring(text)
                     ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-                    entry = root.find('atom:entry', ns)
                     
-                    if entry is not None:
+                    entries = root.findall('atom:entry', ns)
+                    
+                    if not entries:
+                        return
+
+                    # Inicjalizacja przy pierwszym uruchomieniu
+                    if not YOUTUBE_INITIALIZED:
+                        for entry in entries:
+                            video_id = entry.find('yt:videoId', ns).text
+                            SEEN_VIDEOS.add(video_id)
+                        YOUTUBE_INITIALIZED = True
+                        return
+
+                    # Sprawdzamy nowości od najstarszych do najnowszych
+                    for entry in reversed(entries):
                         video_id = entry.find('yt:videoId', ns).text
-                        title = entry.find('atom:title', ns).text
-                        link = entry.find('atom:link', ns).attrib['href']
-                        author = entry.find('atom:author/atom:name', ns).text
                         
-                        if LAST_VIDEO_ID is None:
-                            LAST_VIDEO_ID = video_id
-                        elif video_id != LAST_VIDEO_ID:
-                            LAST_VIDEO_ID = video_id
+                        if video_id not in SEEN_VIDEOS:
+                            SEEN_VIDEOS.add(video_id)
+                            
+                            title = entry.find('atom:title', ns).text
+                            link = entry.find('atom:link', ns).attrib['href']
+                            author = entry.find('atom:author/atom:name', ns).text
+                            
+                            # ZABEZPIECZENIE: Jeśli to powtórka live (często ma LIVE w tytule), ignorujemy jako nowy film
+                            if "live" in title.lower() or "transmisja" in title.lower():
+                                continue
                             
                             embed = discord.Embed(
                                 title=title,
@@ -128,6 +147,7 @@ async def check_youtube():
                             embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
                             
                             await channel.send(content="Nowy materiał wleciał na kanał PlayStation Polska!", embed=embed)
+
     except Exception as e:
         print(f"Błąd podczas sprawdzania YouTube: {e}")
 
@@ -174,9 +194,9 @@ URL_PATTERN = re.compile(
 def convert_url(url: str) -> str:
     url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
     url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
+    url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch)/', 'https://facebed.com/', url, flags=re.IGNORECASE)
     return url
 
-# ZAKTUALIZOWANA FUNKCJA: Ściąga prawidłowe ceny dla produktów z trialem i ignoruje tekst "Wersja próbna gry"
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
     detale = {
@@ -197,14 +217,12 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # 1. Tytuł gry z tagu <title>
                     if soup.title and soup.title.string:
                         title_str = soup.title.string
                         if "|" in title_str:
                             title_str = title_str.split('|')[0].strip()
                         nazwa = title_str
 
-                    # 2. Opis (sztywne ucięcie do 160 znaków) i obrazek z JSON-LD
                     json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
                     if json_ld_tag and json_ld_tag.string:
                         try:
@@ -223,12 +241,10 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                         except:
                             pass
 
-                    # 3. Precyzyjne wyciąganie cen TYLKO dla aktywnej, głównej edycji gry
                     cena_standardowa = None
                     cena_promocyjna_plus = None
                     active_cta_id = None
 
-                    # KROK A: Szukamy activeCtaId głównego produktu, żeby odciąć boczne edycje
                     for script in soup.find_all("script"):
                         if script.string and "activeCtaId" in script.string:
                             cta_match = re.search(r'"activeCtaId"\s*:\s*"([^"]+)"', script.string)
@@ -236,15 +252,13 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                                 active_cta_id = cta_match.group(1)
                                 break
 
-                    # KROK B: Parsujemy ceny należące wyłącznie do aktywnego boku zakupowego
                     for script in soup.find_all("script"):
                         if script.string and "ctaWithPrice" in script.string:
                             text_content = script.string
                             
                             if active_cta_id and active_cta_id not in text_content:
-                                continue  # Pomijamy śmieci z innych edycji
+                                continue 
                             
-                            # Ignorujemy skrypty wersji próbnych (Trial) na poziomie struktury Next.js
                             if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
                                 continue
 
@@ -253,7 +267,6 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                             
                             if base_match:
                                 temp_base = base_match.group(1).replace("zl", "zł").strip()
-                                # Odrzucamy tekstową cenę triala, ale pozwalamy na kwotę cyfrową
                                 if "Wersja" not in temp_base and "próbna" not in temp_base:
                                     cena_standardowa = temp_base
                                     
@@ -265,11 +278,9 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                                     else:
                                         cena_standardowa = stan_ceny
                             
-                            # Przerywamy pętlę tylko wtedy, gdy udało się wyciągnąć prawdziwą kwotę standardową
                             if active_cta_id and cena_standardowa:
                                 break
 
-                    # 4. Przypisywanie przefiltrowanych danych
                     if cena_standardowa:
                         detale["cena_reg"] = cena_standardowa
                     
@@ -328,14 +339,12 @@ async def usun_wiadomosci(ctx, *message_ids: int):
     deleted = 0
     not_found = 0
 
-    # Najpierw usuwamy wiadomość użytkownika, który wpisał komendę !uw
     try:
         await ctx.message.delete()
     except:
         pass
 
     if not message_ids:
-        # Wysyłanie w trybie silent (bez pingu)
         await ctx.send("Podaj ID wiadomości do usunięcia. Przykład: `!uw 123456789012345678`", delete_after=8, silent=True)
         return
 
@@ -353,7 +362,6 @@ async def usun_wiadomosci(ctx, *message_ids: int):
             await ctx.send("Wystąpił błąd.", delete_after=5, silent=True)
             return
 
-    # Raport końcowy również wysyłany jest w trybie silent
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5, silent=True)
 
 
@@ -422,7 +430,7 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store (Własny estetyczny Embed)
+        # 1. Obsługa PlayStation Store
         if "store.playstation.com" in url_lower:
             if message.channel.id not in PROMO_CHANNELS:
                 continue
@@ -441,7 +449,7 @@ async def on_message(message: discord.Message):
                     title=nazwa_gry,
                     url=url,
                     description=detale["description"],
-                    color=0x00439C  # Oficjalny niebieski kolor PlayStation
+                    color=0x00439C 
                 )
                 
                 embed.set_author(
@@ -471,24 +479,21 @@ async def on_message(message: discord.Message):
             else:
                 platforma = "Social Media"
 
-            if platforma == "Facebook":
-                if url not in seen:
-                    seen.add(url)
-                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({url})"
-                    await message.channel.send(
-                        f"{hyperlink}\n"
-                        f"> ⚠️ *Niestety, aby zobaczyć zawartość tego linku, wymagane jest zalogowanie do serwisu Facebook.*"
-                    )
-                    try: await message.delete()
-                    except: pass
-            else:
-                fixed = convert_url(url)
-                if fixed not in seen:
-                    seen.add(fixed)
+            fixed = convert_url(url)
+            if fixed not in seen:
+                seen.add(fixed)
+                
+                # ZMIANA: Sprawdzamy czy to Facebook i dodajemy info o oznaczeniu
+                if platforma == "Facebook":
+                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})\n*(Gdyby embed nie działał, oznacz @allegrojacc)*"
+                else:
                     hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
-                    await message.channel.send(hyperlink)
-                    try: await message.delete()
-                    except: pass
+                
+                await message.channel.send(hyperlink)
+                try: 
+                    await message.delete()
+                except: 
+                    pass
 
 
 # --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
