@@ -10,6 +10,11 @@ import xml.etree.ElementTree as ET
 import itertools
 from flask import Flask
 from bs4 import BeautifulSoup
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 # --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
 app = Flask(__name__)
@@ -64,10 +69,17 @@ async def change_status():
     else:
         await bot.change_presence(activity=next(statuses))
 
-@tasks.loop(minutes=2)
+@tasks.loop(minutes=5)
 async def check_youtube():
     global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW
     await bot.wait_until_ready()
+    
+    # Sprawdzanie czy jest między 15:00 a 20:00 polskiego czasu
+    tz_pl = ZoneInfo("Europe/Warsaw")
+    now = datetime.now(tz_pl)
+    
+    if not (15 <= now.hour < 20):
+        return
     
     channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
     if not channel:
@@ -134,8 +146,8 @@ async def check_youtube():
                             link = entry.find('atom:link', ns).attrib['href']
                             author = entry.find('atom:author/atom:name', ns).text
                             
-                            # ZABEZPIECZENIE: Jeśli to powtórka live (często ma LIVE w tytule), ignorujemy jako nowy film
-                            if "live" in title.lower() or "transmisja" in title.lower():
+                            # FILTR: Przepuszczamy TYLKO materiały ze słowem "stream" w tytule
+                            if "stream" not in title.lower():
                                 continue
                             
                             embed = discord.Embed(
