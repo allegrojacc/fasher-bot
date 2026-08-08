@@ -44,11 +44,18 @@ PROMO_CHANNELS = [
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
 
+# KANAŁY URODZINOWE
+BIRTHDAY_DATABASE_CHANNEL_ID = 1535735325920596030  # ZMIEŃ NA ID swojego prywatnego kanału bota!
+BIRTHDAY_ANNOUNCE_CHANNEL_ID = 1083730752321101857  # Kanał, gdzie bot wysyła życzenia
+
 SEEN_VIDEOS = set()
 YOUTUBE_INITIALIZED = False
 IS_LIVE_NOW = False
 
-# Globalna sesja HTTP (optymalizacja RAM na Renderze)
+# Pamięć podręczna urodzin: {user_id (int): "DD-MM"}
+BIRTHDAYS = {}
+
+# Globalna sesja HTTP (dla optymalizacji pamięci RAM na Renderze)
 session: aiohttp.ClientSession = None
 
 intents = discord.Intents.default()
@@ -65,6 +72,44 @@ statuses = itertools.cycle([
     discord.Game("Grand Theft Auto VI"),
 ])
 
+# --- FUNKCJE BAZY DANYCH URODZIN ---
+async def load_birthdays():
+    """Wczytuje urodziny z pojedynczych wiadomości w prywatnym kanale bota."""
+    global BIRTHDAYS
+    BIRTHDAYS.clear()
+    
+    channel = bot.get_channel(BIRTHDAY_DATABASE_CHANNEL_ID)
+    if not channel:
+        print("Błąd: Nie znaleziono kanału bazy urodzin!")
+        return
+    
+    async for msg in channel.history(limit=200):
+        if msg.author == bot.user and ":" in msg.content:
+            try:
+                u_id_str, bday = msg.content.strip().split(":")
+                BIRTHDAYS[int(u_id_str)] = bday
+            except ValueError:
+                continue
+    print(f"Wczytano urodziny dla {len(BIRTHDAYS)} użytkowników.")
+
+async def save_user_birthday(user_id: int, bday: str):
+    """Usuwa stary wpis użytkownika z kanału bazy i zapisuje nowy."""
+    channel = bot.get_channel(BIRTHDAY_DATABASE_CHANNEL_ID)
+    if not channel:
+        return
+    
+    async for msg in channel.history(limit=200):
+        if msg.author == bot.user and msg.content.startswith(f"{user_id}:"):
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+            break
+
+    await channel.send(f"{user_id}:{bday}")
+    BIRTHDAYS[user_id] = bday
+
+# --- PĘTLE ZADAŃ ---
 @tasks.loop(minutes=2)
 async def change_status():
     global IS_LIVE_NOW
@@ -156,49 +201,38 @@ async def check_youtube():
     except Exception as e:
         print(f"Błąd podczas sprawdzania YouTube: {e}")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def test_yt(ctx):
-    await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
-    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
-    try:
-        async with session.get(url, timeout=10) as response:
-            if response.status == 200:
-                text = await response.text()
-                root = ET.fromstring(text)
-                ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-                entry = root.find('atom:entry', ns)
-                
-                if entry is not None:
-                    video_id = entry.find('yt:videoId', ns).text
-                    title = entry.find('atom:title', ns).text
-                    link = entry.find('atom:link', ns).attrib['href']
-                    author = entry.find('atom:author/atom:name', ns).text
+@tasks.loop(minutes=1)
+async def check_birthdays():
+    await bot.wait_until_ready()
+    
+    tz_pl = ZoneInfo("Europe/Warsaw")
+    now = datetime.now(tz_pl)
+    
+    # Wykonuje się dokładnie o 00:00 czasu polskiego
+    if now.hour == 0 and now.minute == 0:
+        today_str = now.strftime("%d-%m")
+        channel = bot.get_channel(BIRTHDAY_ANNOUNCE_CHANNEL_ID)
+        
+        if channel:
+            for user_id, bday in list(BIRTHDAYS.items()):
+                if bday == today_str:
+                    await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
                     
-                    embed = discord.Embed(
-                        title=title,
-                        url=link,
-                        description=f"Nowy materiał na kanale **{author}**! (Wiadomość Testowa)",
-                        color=0x003399
-                    )
-                    embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
-                    await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
-                else:
-                    await ctx.send("Nie znaleziono materiałów.")
-    except Exception as e:
-        await ctx.send(f"Wystąpił błąd: {e}")
+        # Śpij 61 sekund, aby zapobiec powtórnemu wysłaniu w ciągu tej samej minuty
+        await asyncio.sleep(61)
 
+# --- HELPERY I PARSERY ---
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
 
 def convert_url(url: str) -> str:
-    # 1. Czyszczenie linku ze śledzących parametrów (wszystko po znaku '?')
+    # 1. Czyszczenie linku ze śledzących parametrów (wszystko po '?')
     parsed_url = urlparse(url)
     clean_url = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
 
-    # 2. Podmiana domen na wersje z osadzaniem (embedem)
+    # 2. Podmiana domen na wersje z osadzaniem
     clean_url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', clean_url, flags=re.IGNORECASE)
     clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', clean_url, flags=re.IGNORECASE)
     clean_url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch)/', 'https://facebed.com/', clean_url, flags=re.IGNORECASE)
@@ -305,6 +339,7 @@ def has_delete_role():
         return any(role.id == DELETE_ROLE_ID for role in ctx.author.roles)
     return commands.check(predicate)
 
+# --- ZDARZENIA I KOMENDY ---
 @bot.event
 async def on_ready():
     global session
@@ -312,12 +347,81 @@ async def on_ready():
         session = aiohttp.ClientSession()
         
     print(f'Bot działa jako {bot.user}')
+    
+    # Wczytanie bazy urodzin z prywatnego kanału
+    await load_birthdays()
+    
     if not check_youtube.is_running():
         check_youtube.start()
     if not change_status.is_running():
         change_status.start()
+    if not check_birthdays.is_running():
+        check_birthdays.start()
 
-# --- KOMENDA DO TWORZENIA RANG ---
+# --- KOMENDA URODZINOWA ---
+@bot.command(name="urodziny", aliases=["dodajurodziny", "edytujurodziny"])
+async def ustaw_urodziny(ctx, data: str = None):
+    if not data:
+        await ctx.send("Podaj datę urodzin w formacie `DD-MM` (np. `!urodziny 08-08` lub `!urodziny 15.05`).", delete_after=10)
+        return
+
+    clean_data = data.replace(".", "-").replace("/", "-")
+    parts = clean_data.split("-")
+    
+    if len(parts) != 2:
+        await ctx.send("Błędny format! Użyj formatu `DD-MM`, np. `08-08` dla 8 sierpnia.", delete_after=8)
+        return
+
+    try:
+        day = int(parts[0])
+        month = int(parts[1])
+        datetime(2024, month, day)
+        formatted_bday = f"{day:02d}-{month:02d}"
+    except ValueError:
+        await ctx.send("Podana data nie istnieje! Sprawdź dzień i miesiąc.", delete_after=8)
+        return
+
+    await save_user_birthday(ctx.author.id, formatted_bday)
+    await ctx.send(f"✅ Zapisano Twoje urodziny na **{formatted_bday}**!", delete_after=8)
+    
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+
+# --- INNE KOMENDY ---
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def test_yt(ctx):
+    await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
+    try:
+        async with session.get(url, timeout=10) as response:
+            if response.status == 200:
+                text = await response.text()
+                root = ET.fromstring(text)
+                ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+                entry = root.find('atom:entry', ns)
+                
+                if entry is not None:
+                    video_id = entry.find('yt:videoId', ns).text
+                    title = entry.find('atom:title', ns).text
+                    link = entry.find('atom:link', ns).attrib['href']
+                    author = entry.find('atom:author/atom:name', ns).text
+                    
+                    embed = discord.Embed(
+                        title=title,
+                        url=link,
+                        description=f"Nowy materiał na kanale **{author}**! (Wiadomość Testowa)",
+                        color=0x003399
+                    )
+                    embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
+                    await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
+                else:
+                    await ctx.send("Nie znaleziono materiałów.")
+    except Exception as e:
+        await ctx.send(f"Wystąpił błąd: {e}")
+
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def setup_roles(ctx, title: str, *args):
@@ -340,7 +444,6 @@ async def setup_roles(ctx, title: str, *args):
     for emoji in emojis_to_react:
         await msg.add_reaction(emoji)
 
-# --- USUWANIE WIADOMOŚCI PO ID ---
 @bot.command(name="uw")
 @has_delete_role()
 @commands.bot_has_permissions(manage_messages=True)
@@ -372,7 +475,6 @@ async def usun_wiadomosci(ctx, *message_ids: int):
 
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5, silent=True)
 
-# --- EDYTOWANIE WIADOMOŚCI BOTA PO ID ---
 @bot.command(name="ew")
 @has_delete_role()
 async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
@@ -410,7 +512,7 @@ async def edytuj_wiadomosc_error(ctx, error):
         except discord.HTTPException:
             pass
 
-# --- OBSŁUGA LINKÓW ---
+# --- OBSŁUGA WIADOMOŚCI I LINKÓW ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -427,7 +529,7 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
         
-        # 1. Obsługa PlayStation Store
+        # 1. PS Store
         if "store.playstation.com" in url_lower:
             if message.channel.id not in PROMO_CHANNELS:
                 continue
@@ -465,7 +567,7 @@ async def on_message(message: discord.Message):
                 
                 await message.channel.send(embed=embed)
 
-        # 2. Obsługa Social Mediów
+        # 2. Social Media
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
@@ -491,7 +593,7 @@ async def on_message(message: discord.Message):
                 except discord.HTTPException: 
                     pass
 
-# --- SYSTEM REAKCJI ---
+# --- SYSTEM REAKCJI RÓL ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == bot.user.id or not payload.guild_id:
