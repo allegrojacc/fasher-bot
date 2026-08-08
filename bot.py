@@ -1,16 +1,21 @@
 import os
 import re
-import threading
 import json
+import asyncio
+import xml.etree.ElementTree as ET
+import itertools
+from datetime import datetime
+from urllib.parse import urlparse, urlunparse
+
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import BadArgument
+
 import aiohttp
-import xml.etree.ElementTree as ET
-import itertools
-from flask import Flask
 from bs4 import BeautifulSoup
-from datetime import datetime
+from waitress import serve
+from flask import Flask
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -25,25 +30,16 @@ def home():
 
 def run_http_server():
     port = int(os.getenv("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
+    serve(app, host='0.0.0.0', port=port, threads=2)
 
 # --- GŁÓWNY KOD BOTA ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
 
-# Lista kanałów, na których bot przetwarza promocje z PS Store
 PROMO_CHANNELS = [
     1321787613522427964,  # Główny kanał promek
     1508226473176334366   # Nowy kanał testowy bota
 ]
-
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.reactions = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
 
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
@@ -51,6 +47,16 @@ DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844
 SEEN_VIDEOS = set()
 YOUTUBE_INITIALIZED = False
 IS_LIVE_NOW = False
+
+# Globalna sesja HTTP (optymalizacja RAM na Renderze)
+session: aiohttp.ClientSession = None
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.reactions = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 statuses = itertools.cycle([
     discord.Game("God of War Laufey"),
@@ -71,85 +77,73 @@ async def change_status():
 
 @tasks.loop(minutes=5)
 async def check_youtube():
-    global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW
+    global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW, session
     await bot.wait_until_ready()
     
-    # Sprawdzanie czy jest między 15:00 a 20:00 polskiego czasu
     tz_pl = ZoneInfo("Europe/Warsaw")
     now = datetime.now(tz_pl)
     
-    if not (15 <= now.hour < 20):
-        return
-    
-    channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
-    if not channel:
-        return
+    # 1. Sprawdzanie LIVE (Tylko w wyznaczonych godzinach)
+    if 15 <= now.hour < 20:
+        channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
+        if channel:
+            live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
+            try:
+                async with session.get(live_url, timeout=10) as live_response:
+                    if live_response.status == 200:
+                        live_text = await live_response.text()
+                        has_live_marker = '"isLiveNow":true' in live_text and '"style":"LIVE"' in live_text
+                        is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
+                        
+                        is_currently_live = has_live_marker and not is_upcoming
+                        
+                        if is_currently_live and not IS_LIVE_NOW:
+                            embed = discord.Embed(
+                                title="🔴 PlayStation Polska nadaje NA ŻYWO!",
+                                description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
+                                url=live_url,
+                                color=0xFF0000 
+                            )
+                            await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
+                        
+                        IS_LIVE_NOW = is_currently_live
+            except Exception as e:
+                print(f"Błąd sprawdzania statusu LIVE: {e}")
 
-    # Sprawdzanie czy aktualnie trwa stream
-    live_url = f"https://www.youtube.com/channel/{YOUTUBE_CHANNEL_ID}/live"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(live_url) as live_response:
-                if live_response.status == 200:
-                    live_text = await live_response.text()
-                    
-                    # Bardziej rygorystyczne sprawdzanie obecności prawdziwego live
-                    has_live_marker = '"isLiveNow":true' in live_text and '"style":"LIVE"' in live_text
-                    is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
-                    
-                    is_currently_live = has_live_marker and not is_upcoming
-                    
-                    if is_currently_live and not IS_LIVE_NOW:
-                        embed = discord.Embed(
-                            title="🔴 PlayStation Polska nadaje NA ŻYWO!",
-                            description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
-                            url=live_url,
-                            color=0xFF0000 
-                        )
-                        await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
-                    
-                    IS_LIVE_NOW = is_currently_live
-    except Exception as e:
-        print(f"Błąd sprawdzania statusu LIVE: {e}")
-
-    # Sprawdzanie RSS dla nowych filmów/powiadomień
+    # 2. Sprawdzanie RSS dla nowych filmów
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    text = await response.text()
-                    root = ET.fromstring(text)
-                    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-                    
-                    entries = root.findall('atom:entry', ns)
-                    
-                    if not entries:
-                        return
+        async with session.get(url, timeout=10) as response:
+            if response.status == 200:
+                text = await response.text()
+                root = ET.fromstring(text)
+                ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+                
+                entries = root.findall('atom:entry', ns)
+                if not entries:
+                    return
 
-                    # Inicjalizacja przy pierwszym uruchomieniu
-                    if not YOUTUBE_INITIALIZED:
-                        for entry in entries:
-                            video_id = entry.find('yt:videoId', ns).text
-                            SEEN_VIDEOS.add(video_id)
-                        YOUTUBE_INITIALIZED = True
-                        return
+                if not YOUTUBE_INITIALIZED:
+                    for entry in entries:
+                        v_id = entry.find('yt:videoId', ns).text
+                        SEEN_VIDEOS.add(v_id)
+                    YOUTUBE_INITIALIZED = True
+                    return
 
-                    # Sprawdzamy nowości od najstarszych do najnowszych
-                    for entry in reversed(entries):
-                        video_id = entry.find('yt:videoId', ns).text
+                channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
+                for entry in reversed(entries):
+                    video_id = entry.find('yt:videoId', ns).text
+                    
+                    if video_id not in SEEN_VIDEOS:
+                        SEEN_VIDEOS.add(video_id)
+                        title = entry.find('atom:title', ns).text
+                        link = entry.find('atom:link', ns).attrib['href']
+                        author = entry.find('atom:author/atom:name', ns).text
                         
-                        if video_id not in SEEN_VIDEOS:
-                            SEEN_VIDEOS.add(video_id)
-                            
-                            title = entry.find('atom:title', ns).text
-                            link = entry.find('atom:link', ns).attrib['href']
-                            author = entry.find('atom:author/atom:name', ns).text
-                            
-                            # FILTR: Przepuszczamy TYLKO materiały ze słowem "stream" w tytule
-                            if "stream" not in title.lower():
-                                continue
-                            
+                        if "stream" not in title.lower():
+                            continue
+                        
+                        if channel:
                             embed = discord.Embed(
                                 title=title,
                                 url=link,
@@ -157,7 +151,6 @@ async def check_youtube():
                                 color=0x003399
                             )
                             embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
-                            
                             await channel.send(content="Nowy materiał wleciał na kanał PlayStation Polska!", embed=embed)
 
     except Exception as e:
@@ -169,45 +162,48 @@ async def test_yt(ctx):
     await ctx.send("Sprawdzam najnowszy film z PlayStation Polska (wymuszenie)...")
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    text = await response.text()
-                    root = ET.fromstring(text)
-                    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-                    entry = root.find('atom:entry', ns)
+        async with session.get(url, timeout=10) as response:
+            if response.status == 200:
+                text = await response.text()
+                root = ET.fromstring(text)
+                ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+                entry = root.find('atom:entry', ns)
+                
+                if entry is not None:
+                    video_id = entry.find('yt:videoId', ns).text
+                    title = entry.find('atom:title', ns).text
+                    link = entry.find('atom:link', ns).attrib['href']
+                    author = entry.find('atom:author/atom:name', ns).text
                     
-                    if entry is not None:
-                        video_id = entry.find('yt:videoId', ns).text
-                        title = entry.find('atom:title', ns).text
-                        link = entry.find('atom:link', ns).attrib['href']
-                        author = entry.find('atom:author/atom:name', ns).text
-                        
-                        embed = discord.Embed(
-                            title=title,
-                            url=link,
-                            description=f"Nowy materiał na kanale **{author}**! (Wiadomość Testowa)",
-                            color=0x003399
-                        )
-                        embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
-                        
-                        await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
-                    else:
-                        await ctx.send("Nie znaleziono materiałów.")
+                    embed = discord.Embed(
+                        title=title,
+                        url=link,
+                        description=f"Nowy materiał na kanale **{author}**! (Wiadomość Testowa)",
+                        color=0x003399
+                    )
+                    embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
+                    await ctx.send(content="Testowy Embed z nowym filmem! 🎮", embed=embed)
+                else:
+                    await ctx.send("Nie znaleziono materiałów.")
     except Exception as e:
         await ctx.send(f"Wystąpił błąd: {e}")
 
-# Wyłapuje społecznościówki oraz PlayStation Store
 URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
 
 def convert_url(url: str) -> str:
-    url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', url, flags=re.IGNORECASE)
-    url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch)/', 'https://facebed.com/', url, flags=re.IGNORECASE)
-    return url
+    # 1. Czyszczenie linku ze śledzących parametrów (wszystko po znaku '?')
+    parsed_url = urlparse(url)
+    clean_url = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+
+    # 2. Podmiana domen na wersje z osadzaniem (embedem)
+    clean_url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', clean_url, flags=re.IGNORECASE)
+    clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', clean_url, flags=re.IGNORECASE)
+    clean_url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch)/', 'https://facebed.com/', clean_url, flags=re.IGNORECASE)
+    
+    return clean_url
 
 async def get_ps_game_details(url: str) -> tuple[str, dict]:
     nazwa = "Gra PlayStation"
@@ -218,88 +214,86 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
         "description": "Brak opisu gry."
     }
     
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "pl-PL,pl;q=0.9"
+    }
+    
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept-Language": "pl-PL,pl;q=0.9"
-            }
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    if soup.title and soup.title.string:
-                        title_str = soup.title.string
-                        if "|" in title_str:
-                            title_str = title_str.split('|')[0].strip()
-                        nazwa = title_str
+        async with session.get(url, headers=headers, timeout=10) as response:
+            if response.status == 200:
+                html = await response.text()
+                soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
+                
+                if soup.title and soup.title.string:
+                    title_str = soup.title.string
+                    if "|" in title_str:
+                        title_str = title_str.split('|')[0].strip()
+                    nazwa = title_str
 
-                    json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
-                    if json_ld_tag and json_ld_tag.string:
-                        try:
-                            data = json.loads(json_ld_tag.string)
-                            if "description" in data:
-                                full_desc = data["description"].strip()
-                                if len(full_desc) > 160:
-                                    truncated = full_desc[:160]
-                                    if " " in truncated:
-                                        truncated = truncated.rsplit(" ", 1)[0]
-                                    detale["description"] = truncated + "..."
+                json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
+                if json_ld_tag and json_ld_tag.string:
+                    try:
+                        data = json.loads(json_ld_tag.string)
+                        if "description" in data:
+                            full_desc = data["description"].strip()
+                            if len(full_desc) > 160:
+                                truncated = full_desc[:160]
+                                if " " in truncated:
+                                    truncated = truncated.rsplit(" ", 1)[0]
+                                detale["description"] = truncated + "..."
+                            else:
+                                detale["description"] = full_desc
+                        if "image" in data:
+                            detale["image_url"] = data["image"]
+                    except Exception:
+                        pass
+
+                cena_standardowa = None
+                cena_promocyjna_plus = None
+                active_cta_id = None
+
+                for script in soup.find_all("script"):
+                    if script.string and "activeCtaId" in script.string:
+                        cta_match = re.search(r'"activeCtaId"\s*:\s*"([^"]+)"', script.string)
+                        if cta_match:
+                            active_cta_id = cta_match.group(1)
+                            break
+
+                for script in soup.find_all("script"):
+                    if script.string and "ctaWithPrice" in script.string:
+                        text_content = script.string
+                        if active_cta_id and active_cta_id not in text_content:
+                            continue 
+                        if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
+                            continue
+
+                        base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
+                        discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
+                        
+                        if base_match:
+                            temp_base = base_match.group(1).replace("zl", "zł").strip()
+                            if "Wersja" not in temp_base and "próbna" not in temp_base:
+                                cena_standardowa = temp_base
+                                
+                        if discount_match:
+                            stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
+                            if "Wersja" not in stan_ceny and "próbna" not in stan_ceny:
+                                if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
+                                    cena_promocyjna_plus = stan_ceny
                                 else:
-                                    detale["description"] = full_desc
-                            if "image" in data:
-                                detale["image_url"] = data["image"]
-                        except:
-                            pass
+                                    cena_standardowa = stan_ceny
+                        
+                        if active_cta_id and cena_standardowa:
+                            break
 
-                    cena_standardowa = None
-                    cena_promocyjna_plus = None
-                    active_cta_id = None
-
-                    for script in soup.find_all("script"):
-                        if script.string and "activeCtaId" in script.string:
-                            cta_match = re.search(r'"activeCtaId"\s*:\s*"([^"]+)"', script.string)
-                            if cta_match:
-                                active_cta_id = cta_match.group(1)
-                                break
-
-                    for script in soup.find_all("script"):
-                        if script.string and "ctaWithPrice" in script.string:
-                            text_content = script.string
-                            
-                            if active_cta_id and active_cta_id not in text_content:
-                                continue 
-                            
-                            if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
-                                continue
-
-                            base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
-                            discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
-                            
-                            if base_match:
-                                temp_base = base_match.group(1).replace("zl", "zł").strip()
-                                if "Wersja" not in temp_base and "próbna" not in temp_base:
-                                    cena_standardowa = temp_base
-                                    
-                            if discount_match:
-                                stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
-                                if "Wersja" not in stan_ceny and "próbna" not in stan_ceny:
-                                    if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
-                                        cena_promocyjna_plus = stan_ceny
-                                    else:
-                                        cena_standardowa = stan_ceny
-                            
-                            if active_cta_id and cena_standardowa:
-                                break
-
-                    if cena_standardowa:
-                        detale["cena_reg"] = cena_standardowa
-                    
-                    if cena_promocyjna_plus and cena_promocyjna_plus != cena_standardowa:
-                        detale["cena_plus"] = cena_promocyjna_plus
-                    else:
-                        detale["cena_plus"] = None
+                if cena_standardowa:
+                    detale["cena_reg"] = cena_standardowa
+                
+                if cena_promocyjna_plus and cena_promocyjna_plus != cena_standardowa:
+                    detale["cena_plus"] = cena_promocyjna_plus
+                else:
+                    detale["cena_plus"] = None
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
@@ -313,6 +307,10 @@ def has_delete_role():
 
 @bot.event
 async def on_ready():
+    global session
+    if session is None or session.closed:
+        session = aiohttp.ClientSession()
+        
     print(f'Bot działa jako {bot.user}')
     if not check_youtube.is_running():
         check_youtube.start()
@@ -342,23 +340,22 @@ async def setup_roles(ctx, title: str, *args):
     for emoji in emojis_to_react:
         await msg.add_reaction(emoji)
 
-
 # --- USUWANIE WIADOMOŚCI PO ID ---
 @bot.command(name="uw")
 @has_delete_role()
 @commands.bot_has_permissions(manage_messages=True)
 async def usun_wiadomosci(ctx, *message_ids: int):
-    deleted = 0
-    not_found = 0
-
     try:
         await ctx.message.delete()
-    except:
+    except discord.HTTPException:
         pass
 
     if not message_ids:
         await ctx.send("Podaj ID wiadomości do usunięcia. Przykład: `!uw 123456789012345678`", delete_after=8, silent=True)
         return
+
+    deleted = 0
+    not_found = 0
 
     for msg_id in message_ids:
         try:
@@ -371,42 +368,31 @@ async def usun_wiadomosci(ctx, *message_ids: int):
             await ctx.send("Brak uprawnień do usuwania wiadomości.", delete_after=5, silent=True)
             return
         except discord.HTTPException:
-            await ctx.send("Wystąpił błąd.", delete_after=5, silent=True)
-            return
+            continue
 
     await ctx.send(f"Usunięto: {deleted} | Nie znaleziono: {not_found}", delete_after=5, silent=True)
-
 
 # --- EDYTOWANIE WIADOMOŚCI BOTA PO ID ---
 @bot.command(name="ew")
 @has_delete_role()
 async def edytuj_wiadomosc(ctx, message_id: int, *, nowa_tresc: str = None):
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+
     if not nowa_tresc:
         await ctx.send("Musisz podać nową treść wiadomości po ID!", delete_after=5)
-        try:
-            await ctx.message.delete()
-        except:
-            pass
         return
 
     try:
         msg = await ctx.channel.fetch_message(message_id)
-        
         if msg.author != bot.user:
             await ctx.send("Mogę edytować wyłącznie wiadomości mojego autorstwa!", delete_after=5)
-            try:
-                await ctx.message.delete()
-            except:
-                pass
             return
 
         await msg.edit(content=nowa_tresc)
         await ctx.send("Wiadomość została zaktualizowana.", delete_after=3)
-        
-        try:
-            await ctx.message.delete()
-        except:
-            pass
 
     except discord.NotFound:
         await ctx.send("Nie znalazłem wiadomości o takim ID na tym kanale.", delete_after=5)
@@ -421,9 +407,8 @@ async def edytuj_wiadomosc_error(ctx, error):
         await ctx.send("Błędny format ID. Poprawny wzór: `!ew [ID_wiadomości] [nowy tekst]`", delete_after=6)
         try:
             await ctx.message.delete()
-        except:
+        except discord.HTTPException:
             pass
-
 
 # --- OBSŁUGA LINKÓW ---
 @bot.event
@@ -452,7 +437,7 @@ async def on_message(message: discord.Message):
                 
                 try:
                     await message.delete()
-                except:
+                except discord.HTTPException:
                     pass
                 
                 nazwa_gry, detale = await get_ps_game_details(url)
@@ -480,7 +465,7 @@ async def on_message(message: discord.Message):
                 
                 await message.channel.send(embed=embed)
 
-        # 2. Obsługa Social Mediów (Twitter/X, Insta, Facebook)
+        # 2. Obsługa Social Mediów
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
@@ -495,7 +480,6 @@ async def on_message(message: discord.Message):
             if fixed not in seen:
                 seen.add(fixed)
                 
-                # ZMIANA: Sprawdzamy czy to Facebook i dodajemy info o oznaczeniu
                 if platforma == "Facebook":
                     hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})\n*(Gdyby embed nie działał, oznacz @allegrojacc)*"
                 else:
@@ -504,14 +488,13 @@ async def on_message(message: discord.Message):
                 await message.channel.send(hyperlink)
                 try: 
                     await message.delete()
-                except: 
+                except discord.HTTPException: 
                     pass
 
-
-# --- NOWY SYSTEM REAKCJI (CZYTANIE Z WIADOMOŚCI) ---
+# --- SYSTEM REAKCJI ---
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    if payload.user_id == bot.user.id:
+    if payload.user_id == bot.user.id or not payload.guild_id:
         return
 
     guild = bot.get_guild(payload.guild_id)
@@ -522,11 +505,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     try:
         message = await channel.fetch_message(payload.message_id)
-    except:
+    except Exception:
         return
 
     if message.author != bot.user or not message.embeds:
         return
+        
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
@@ -539,14 +523,16 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    member = guild.get_member(payload.user_id)
-                    if not member:
-                        member = await guild.fetch_member(payload.user_id)
-                    await member.add_roles(role)
+                    member = payload.member or await guild.fetch_member(payload.user_id)
+                    if member:
+                        await member.add_roles(role)
             break
 
 @bot.event
 async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if not payload.guild_id:
+        return
+
     guild = bot.get_guild(payload.guild_id)
     if not guild: return
     
@@ -555,11 +541,12 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
     try:
         message = await channel.fetch_message(payload.message_id)
-    except:
+    except Exception:
         return
 
     if message.author != bot.user or not message.embeds:
         return
+        
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
@@ -572,20 +559,17 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                 role_id = int(match.group(1))
                 role = guild.get_role(role_id)
                 if role:
-                    member = guild.get_member(payload.user_id)
-                    if not member:
-                        try:
-                            member = await guild.fetch_member(payload.user_id)
-                        except:
-                            return
-                    await member.remove_roles(role)
+                    try:
+                        member = await guild.fetch_member(payload.user_id)
+                        await member.remove_roles(role)
+                    except Exception:
+                        return
             break
-
 
 # --- START PROCESÓW ---
 if __name__ == "__main__":
-    server_thread = threading.Thread(target=run_http_server)
-    server_thread.daemon = True
+    import threading
+    server_thread = threading.Thread(target=run_http_server, daemon=True)
     server_thread.start()
 
     bot.run(TOKEN)
