@@ -223,7 +223,7 @@ async def check_birthdays():
 
 # --- HELPERY I PARSERY ---
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|facebook\.com|fb\.watch|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
+    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
     re.IGNORECASE
 )
 
@@ -235,7 +235,6 @@ def convert_url(url: str) -> str:
     # 2. Podmiana domen na wersje z osadzaniem
     clean_url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', clean_url, flags=re.IGNORECASE)
     clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', clean_url, flags=re.IGNORECASE)
-    clean_url = re.sub(r'https?://(?:www\.)?(?:facebook\.com|fb\.watch)/', 'https://facebed.com/', clean_url, flags=re.IGNORECASE)
     
     return clean_url
 
@@ -567,14 +566,12 @@ async def on_message(message: discord.Message):
                 
                 await message.channel.send(embed=embed)
 
-        # 2. Social Media
+        # 2. Social Media (X/Twitter, Instagram)
         else:
             if "x.com" in url_lower or "twitter.com" in url_lower:
                 platforma = "Twitter/X"
             elif "instagram.com" in url_lower or "instagr.am" in url_lower:
                 platforma = "Instagram"
-            elif "facebook.com" in url_lower or "fb.watch" in url_lower:
-                platforma = "Facebook"
             else:
                 platforma = "Social Media"
 
@@ -582,10 +579,7 @@ async def on_message(message: discord.Message):
             if fixed not in seen:
                 seen.add(fixed)
                 
-                if platforma == "Facebook":
-                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})\n*(Gdyby embed nie działał, oznacz @allegrojacc)*"
-                else:
-                    hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
+                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
                 
                 await message.channel.send(hyperlink)
                 try: 
