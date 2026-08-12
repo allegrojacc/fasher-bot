@@ -45,8 +45,8 @@ YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
 
 # KANAŁY URODZINOWE
-BIRTHDAY_DATABASE_CHANNEL_ID = 1535735325920596030  # ZMIEŃ NA ID swojego prywatnego kanału bota!
-BIRTHDAY_ANNOUNCE_CHANNEL_ID = 1083730752321101857  # Kanał, gdzie bot wysyła życzenia
+BIRTHDAY_DATABASE_CHANNEL_ID = 1535735325920596030  # ID prywatnego kanału bota
+BIRTHDAY_ANNOUNCE_CHANNEL_ID = 1083730752321101857  # Kanał z życzeniami
 
 SEEN_VIDEOS = set()
 YOUTUBE_INITIALIZED = False
@@ -208,7 +208,6 @@ async def check_birthdays():
     tz_pl = ZoneInfo("Europe/Warsaw")
     now = datetime.now(tz_pl)
     
-    # Wykonuje się dokładnie o 00:00 czasu polskiego
     if now.hour == 0 and now.minute == 0:
         today_str = now.strftime("%d-%m")
         channel = bot.get_channel(BIRTHDAY_ANNOUNCE_CHANNEL_ID)
@@ -218,23 +217,20 @@ async def check_birthdays():
                 if bday == today_str:
                     await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
                     
-        # Śpij 61 sekund, aby zapobiec powtórnemu wysłaniu w ciągu tej samej minuty
         await asyncio.sleep(61)
 
 # --- HELPERY I PARSERY ---
 URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:x\.com|twitter\.com|instagram\.com|instagr\.am|store\.playstation\.com)/[^\s<>]+',
+    r'https?://(?:[a-zA-Z0-0-]+\.)?(?:store\.playstation\.com|x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
 def convert_url(url: str) -> str:
-    # 1. Czyszczenie linku ze śledzących parametrów (wszystko po '?')
     parsed_url = urlparse(url)
     clean_url = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
 
-    # 2. Podmiana domen na wersje z osadzaniem
     clean_url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', clean_url, flags=re.IGNORECASE)
-    clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.vxinstagram.com/', clean_url, flags=re.IGNORECASE)
+    clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.oginstagram.com/', clean_url, flags=re.IGNORECASE)
     
     return clean_url
 
@@ -248,8 +244,8 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
     }
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept-Language": "pl-PL,pl;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     
     try:
@@ -347,7 +343,6 @@ async def on_ready():
         
     print(f'Bot działa jako {bot.user}')
     
-    # Wczytanie bazy urodzin z prywatnego kanału
     await load_birthdays()
     
     if not check_youtube.is_running():
@@ -573,7 +568,7 @@ async def on_message(message: discord.Message):
             elif "instagram.com" in url_lower or "instagr.am" in url_lower:
                 platforma = "Instagram"
             else:
-                platforma = "Social Media"
+                continue
 
             fixed = convert_url(url)
             if fixed not in seen:
