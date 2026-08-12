@@ -4,7 +4,7 @@ import json
 import asyncio
 import xml.etree.ElementTree as ET
 import itertools
-from datetime import datetime
+import datetime
 from urllib.parse import urlparse, urlunparse
 
 import discord
@@ -72,6 +72,11 @@ statuses = itertools.cycle([
     discord.Game("Grand Theft Auto VI"),
 ])
 
+# Strefa czasowa dla bota (Polska)
+tz_pl = ZoneInfo("Europe/Warsaw")
+# Ustawienie godziny 00:00 dla urodzin
+bday_time = datetime.time(hour=0, minute=0, tzinfo=tz_pl)
+
 # --- FUNKCJE BAZY DANYCH URODZIN ---
 async def load_birthdays():
     """Wczytuje urodziny z pojedynczych wiadomości w prywatnym kanale bota."""
@@ -125,8 +130,7 @@ async def check_youtube():
     global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW, session
     await bot.wait_until_ready()
     
-    tz_pl = ZoneInfo("Europe/Warsaw")
-    now = datetime.now(tz_pl)
+    now = datetime.datetime.now(tz_pl)
     
     # 1. Sprawdzanie LIVE (Tylko w wyznaczonych godzinach)
     if 15 <= now.hour < 20:
@@ -201,27 +205,24 @@ async def check_youtube():
     except Exception as e:
         print(f"Błąd podczas sprawdzania YouTube: {e}")
 
-@tasks.loop(minutes=1)
+# Natywne zadanie w discord.py odpalające się dokładnie o 00:00 czasu polskiego
+@tasks.loop(time=bday_time)
 async def check_birthdays():
     await bot.wait_until_ready()
     
-    tz_pl = ZoneInfo("Europe/Warsaw")
-    now = datetime.now(tz_pl)
+    now = datetime.datetime.now(tz_pl)
+    today_str = now.strftime("%d-%m")
+    channel = bot.get_channel(BIRTHDAY_ANNOUNCE_CHANNEL_ID)
     
-    if now.hour == 0 and now.minute == 0:
-        today_str = now.strftime("%d-%m")
-        channel = bot.get_channel(BIRTHDAY_ANNOUNCE_CHANNEL_ID)
-        
-        if channel:
-            for user_id, bday in list(BIRTHDAYS.items()):
-                if bday == today_str:
-                    await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
-                    
-        await asyncio.sleep(61)
+    if channel:
+        for user_id, bday in list(BIRTHDAYS.items()):
+            if bday == today_str:
+                await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
 
 # --- HELPERY I PARSERY ---
+# Poprawiony regex (cyfry 0-9 dodane) + usunięty facebook
 URL_PATTERN = re.compile(
-    r'https?://(?:[a-zA-Z0-0-]+\.)?(?:store\.playstation\.com|x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
+    r'https?://(?:[a-zA-Z0-9-]+\.)?(?:store\.playstation\.com|x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
@@ -369,7 +370,7 @@ async def ustaw_urodziny(ctx, data: str = None):
     try:
         day = int(parts[0])
         month = int(parts[1])
-        datetime(2024, month, day)
+        datetime.datetime(2024, month, day)
         formatted_bday = f"{day:02d}-{month:02d}"
     except ValueError:
         await ctx.send("Podana data nie istnieje! Sprawdź dzień i miesiąc.", delete_after=8)
