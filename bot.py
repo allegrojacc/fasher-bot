@@ -6,33 +6,24 @@ import xml.etree.ElementTree as ET
 import itertools
 import datetime
 from urllib.parse import urlparse, urlunparse
+from typing import Tuple, Dict, Any
 
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import BadArgument
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import aiohttp
 from bs4 import BeautifulSoup
-from waitress import serve
-from flask import Flask
 
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
-# --- MINI-SERWER HTTP (DLA RENDER I UPTIMEROBOT) ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot działa i ma się dobrze!", 200
-
-def run_http_server():
-    port = int(os.getenv("PORT", 10000))
-    serve(app, host='0.0.0.0', port=port, threads=2)
-
-# --- GŁÓWNY KOD BOTA ---
+# --- KONFIGURACJA I ZMIENNE ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
 
@@ -42,7 +33,7 @@ PROMO_CHANNELS = [
 ]
 
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
-DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844 
+DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844
 
 # KANAŁY URODZINOWE
 BIRTHDAY_DATABASE_CHANNEL_ID = 1535735325920596030  # ID prywatnego kanału bota
@@ -55,7 +46,7 @@ IS_LIVE_NOW = False
 # Pamięć podręczna urodzin: {user_id (int): "DD-MM"}
 BIRTHDAYS = {}
 
-# Globalna sesja HTTP (dla optymalizacji pamięci RAM na Renderze)
+# Globalna sesja HTTP
 session: aiohttp.ClientSession = None
 
 intents = discord.Intents.default()
@@ -82,12 +73,12 @@ async def load_birthdays():
     """Wczytuje urodziny z pojedynczych wiadomości w prywatnym kanale bota."""
     global BIRTHDAYS
     BIRTHDAYS.clear()
-    
+
     channel = bot.get_channel(BIRTHDAY_DATABASE_CHANNEL_ID)
     if not channel:
         print("Błąd: Nie znaleziono kanału bazy urodzin!")
         return
-    
+
     async for msg in channel.history(limit=200):
         if msg.author == bot.user and ":" in msg.content:
             try:
@@ -102,7 +93,7 @@ async def save_user_birthday(user_id: int, bday: str):
     channel = bot.get_channel(BIRTHDAY_DATABASE_CHANNEL_ID)
     if not channel:
         return
-    
+
     async for msg in channel.history(limit=200):
         if msg.author == bot.user and msg.content.startswith(f"{user_id}:"):
             try:
@@ -119,7 +110,7 @@ async def save_user_birthday(user_id: int, bday: str):
 async def change_status():
     global IS_LIVE_NOW
     await bot.wait_until_ready()
-    
+
     if IS_LIVE_NOW:
         await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="🔴 LIVE PlayStation Polska"))
     else:
@@ -129,9 +120,9 @@ async def change_status():
 async def check_youtube():
     global SEEN_VIDEOS, YOUTUBE_INITIALIZED, IS_LIVE_NOW, session
     await bot.wait_until_ready()
-    
+
     now = datetime.datetime.now(tz_pl)
-    
+
     # 1. Sprawdzanie LIVE (Tylko w wyznaczonych godzinach)
     if 15 <= now.hour < 20:
         channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
@@ -143,18 +134,18 @@ async def check_youtube():
                         live_text = await live_response.text()
                         has_live_marker = '"isLiveNow":true' in live_text and '"style":"LIVE"' in live_text
                         is_upcoming = '"LAUNCHED_STYLE_UPCOMING"' in live_text or '"isUpcoming":true' in live_text
-                        
+
                         is_currently_live = has_live_marker and not is_upcoming
-                        
+
                         if is_currently_live and not IS_LIVE_NOW:
                             embed = discord.Embed(
                                 title="🔴 PlayStation Polska nadaje NA ŻYWO!",
                                 description="Transmisja właśnie się rozpoczęła. Zapraszam wszystkich Fasherów!",
                                 url=live_url,
-                                color=0xFF0000 
+                                color=0xFF0000
                             )
                             await channel.send(content="UWAGA!! POTĘŻNY stream właśnie sie odpalił!", embed=embed)
-                        
+
                         IS_LIVE_NOW = is_currently_live
             except Exception as e:
                 print(f"Błąd sprawdzania statusu LIVE: {e}")
@@ -167,7 +158,7 @@ async def check_youtube():
                 text = await response.text()
                 root = ET.fromstring(text)
                 ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
-                
+
                 entries = root.findall('atom:entry', ns)
                 if not entries:
                     return
@@ -182,16 +173,16 @@ async def check_youtube():
                 channel = bot.get_channel(DISCORD_NOTIFICATION_CHANNEL_ID)
                 for entry in reversed(entries):
                     video_id = entry.find('yt:videoId', ns).text
-                    
+
                     if video_id not in SEEN_VIDEOS:
                         SEEN_VIDEOS.add(video_id)
                         title = entry.find('atom:title', ns).text
                         link = entry.find('atom:link', ns).attrib['href']
                         author = entry.find('atom:author/atom:name', ns).text
-                        
+
                         if "stream" not in title.lower():
                             continue
-                        
+
                         if channel:
                             embed = discord.Embed(
                                 title=title,
@@ -205,22 +196,20 @@ async def check_youtube():
     except Exception as e:
         print(f"Błąd podczas sprawdzania YouTube: {e}")
 
-# Natywne zadanie w discord.py odpalające się dokładnie o 00:00 czasu polskiego
 @tasks.loop(time=bday_time)
 async def check_birthdays():
     await bot.wait_until_ready()
-    
+
     now = datetime.datetime.now(tz_pl)
     today_str = now.strftime("%d-%m")
     channel = bot.get_channel(BIRTHDAY_ANNOUNCE_CHANNEL_ID)
-    
+
     if channel:
         for user_id, bday in list(BIRTHDAYS.items()):
             if bday == today_str:
                 await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
 
 # --- HELPERY I PARSERY ---
-# Poprawiony regex (cyfry 0-9 dodane) + usunięty facebook
 URL_PATTERN = re.compile(
     r'https?://(?:[a-zA-Z0-9-]+\.)?(?:store\.playstation\.com|x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
@@ -232,10 +221,10 @@ def convert_url(url: str) -> str:
 
     clean_url = re.sub(r'https?://(?:www\.)?(?:x\.com|twitter\.com)/', 'https://fixupx.com/', clean_url, flags=re.IGNORECASE)
     clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.oginstagram.com/', clean_url, flags=re.IGNORECASE)
-    
+
     return clean_url
 
-async def get_ps_game_details(url: str) -> tuple[str, dict]:
+async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
     nazwa = "Gra PlayStation"
     detale = {
         "cena_reg": "Sprawdź w sklepie",
@@ -243,18 +232,18 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
         "image_url": None,
         "description": "Brak opisu gry."
     }
-    
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
     }
-    
+
     try:
         async with session.get(url, headers=headers, timeout=10) as response:
             if response.status == 200:
                 html = await response.text()
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
-                
+
                 if soup.title and soup.title.string:
                     title_str = soup.title.string
                     if "|" in title_str:
@@ -294,18 +283,18 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                     if script.string and "ctaWithPrice" in script.string:
                         text_content = script.string
                         if active_cta_id and active_cta_id not in text_content:
-                            continue 
+                            continue
                         if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
                             continue
 
                         base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
                         discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
-                        
+
                         if base_match:
                             temp_base = base_match.group(1).replace("zl", "zł").strip()
                             if "Wersja" not in temp_base and "próbna" not in temp_base:
                                 cena_standardowa = temp_base
-                                
+
                         if discount_match:
                             stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
                             if "Wersja" not in stan_ceny and "próbna" not in stan_ceny:
@@ -313,13 +302,13 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
                                     cena_promocyjna_plus = stan_ceny
                                 else:
                                     cena_standardowa = stan_ceny
-                        
+
                         if active_cta_id and cena_standardowa:
                             break
 
                 if cena_standardowa:
                     detale["cena_reg"] = cena_standardowa
-                
+
                 if cena_promocyjna_plus and cena_promocyjna_plus != cena_standardowa:
                     detale["cena_plus"] = cena_promocyjna_plus
                 else:
@@ -327,7 +316,7 @@ async def get_ps_game_details(url: str) -> tuple[str, dict]:
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
-        
+
     return nazwa, detale
 
 def has_delete_role():
@@ -341,11 +330,11 @@ async def on_ready():
     global session
     if session is None or session.closed:
         session = aiohttp.ClientSession()
-        
+
     print(f'Bot działa jako {bot.user}')
-    
+
     await load_birthdays()
-    
+
     if not check_youtube.is_running():
         check_youtube.start()
     if not change_status.is_running():
@@ -362,7 +351,7 @@ async def ustaw_urodziny(ctx, data: str = None):
 
     clean_data = data.replace(".", "-").replace("/", "-")
     parts = clean_data.split("-")
-    
+
     if len(parts) != 2:
         await ctx.send("Błędny format! Użyj formatu `DD-MM`, np. `08-08` dla 8 sierpnia.", delete_after=8)
         return
@@ -378,7 +367,7 @@ async def ustaw_urodziny(ctx, data: str = None):
 
     await save_user_birthday(ctx.author.id, formatted_bday)
     await ctx.send(f"✅ Zapisano Twoje urodziny na **{formatted_bday}**!", delete_after=8)
-    
+
     try:
         await ctx.message.delete()
     except discord.HTTPException:
@@ -397,13 +386,13 @@ async def test_yt(ctx):
                 root = ET.fromstring(text)
                 ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
                 entry = root.find('atom:entry', ns)
-                
+
                 if entry is not None:
                     video_id = entry.find('yt:videoId', ns).text
                     title = entry.find('atom:title', ns).text
                     link = entry.find('atom:link', ns).attrib['href']
                     author = entry.find('atom:author/atom:name', ns).text
-                    
+
                     embed = discord.Embed(
                         title=title,
                         url=link,
@@ -523,43 +512,43 @@ async def on_message(message: discord.Message):
 
     for url in urls:
         url_lower = url.lower()
-        
+
         # 1. PS Store
         if "store.playstation.com" in url_lower:
             if message.channel.id not in PROMO_CHANNELS:
                 continue
-                
+
             if url not in seen:
                 seen.add(url)
-                
+
                 try:
                     await message.delete()
                 except discord.HTTPException:
                     pass
-                
+
                 nazwa_gry, detale = await get_ps_game_details(url)
-                
+
                 embed = discord.Embed(
                     title=nazwa_gry,
                     url=url,
                     description=detale["description"],
-                    color=0x00439C 
+                    color=0x00439C
                 )
-                
+
                 embed.set_author(
-                    name=f"Promka od: {message.author.display_name}", 
+                    name=f"Promka od: {message.author.display_name}",
                     icon_url=message.author.display_avatar.url
                 )
-                
+
                 if detale["cena_plus"]:
                     embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
                     embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
                 else:
                     embed.add_field(name="💰 Cena", value=f"**{detale['cena_reg']}**", inline=True)
-                
+
                 if detale["image_url"]:
                     embed.set_image(url=detale["image_url"])
-                
+
                 await message.channel.send(embed=embed)
 
         # 2. Social Media (X/Twitter, Instagram)
@@ -574,13 +563,13 @@ async def on_message(message: discord.Message):
             fixed = convert_url(url)
             if fixed not in seen:
                 seen.add(fixed)
-                
+
                 hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
-                
+
                 await message.channel.send(hyperlink)
-                try: 
+                try:
                     await message.delete()
-                except discord.HTTPException: 
+                except discord.HTTPException:
                     pass
 
 # --- SYSTEM REAKCJI RÓL ---
@@ -591,7 +580,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     guild = bot.get_guild(payload.guild_id)
     if not guild: return
-    
+
     channel = guild.get_channel(payload.channel_id)
     if not channel: return
 
@@ -602,7 +591,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     if message.author != bot.user or not message.embeds:
         return
-        
+
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
@@ -627,7 +616,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
     guild = bot.get_guild(payload.guild_id)
     if not guild: return
-    
+
     channel = guild.get_channel(payload.channel_id)
     if not channel: return
 
@@ -638,7 +627,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
 
     if message.author != bot.user or not message.embeds:
         return
-        
+
     embed = message.embeds[0]
     if not embed.description or "Zareaguj, aby otrzymać rangę:" not in embed.description:
         return
@@ -658,10 +647,6 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                         return
             break
 
-# --- START PROCESÓW ---
+# --- START BOTA ---
 if __name__ == "__main__":
-    import threading
-    server_thread = threading.Thread(target=run_http_server, daemon=True)
-    server_thread.start()
-
     bot.run(TOKEN)
