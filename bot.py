@@ -23,7 +23,7 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
-# --- KONFIGURACJA I ZMIENNE ---
+# --- KONFIGURACJA I ZMIENNE. ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
 
