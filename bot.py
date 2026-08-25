@@ -1,39 +1,28 @@
 import os
 import re
-import json
 import asyncio
 import xml.etree.ElementTree as ET
 import itertools
 import datetime
 from urllib.parse import urlparse, urlunparse
-from typing import Tuple, Dict, Any
 
 import discord
 from discord.ext import commands, tasks
-
-from curl_cffi.requests import AsyncSession
-
 from discord.ext.commands import BadArgument
 
 from dotenv import load_dotenv
 load_dotenv()
 
 import aiohttp
-from bs4 import BeautifulSoup
 
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
-# --- KONFIGURACJA I ZMIENNE. ---
+# --- KONFIGURACJA I ZMIENNE ---
 TOKEN = os.getenv("TOKEN")
 DELETE_ROLE_ID = 1494687052975968306
-
-PROMO_CHANNELS = [
-    1321787613522427964,  # Główny kanał promek
-    1508226473176334366   # Nowy kanał testowy bota
-]
 
 YOUTUBE_CHANNEL_ID = "UCxwjc3YRZemIrOgUM1EGRDg"
 DISCORD_NOTIFICATION_CHANNEL_ID = 1290353850196426844
@@ -212,9 +201,9 @@ async def check_birthdays():
             if bday == today_str:
                 await channel.send(f"Dzisiaj są urodziny <@{user_id}>! Wszystkiego najlepszego! 🎉")
 
-# --- HELPERY I PARSERY ---
+# --- HELPERY I PARSERY SOCIAL MEDIA ---
 URL_PATTERN = re.compile(
-    r'https?://(?:[a-zA-Z0-9-]+\.)?(?:store\.playstation\.com|x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
+    r'https?://(?:[a-zA-Z0-9-]+\.)?(?:x\.com|twitter\.com|instagram\.com|instagr\.am)/[^\s<>]+',
     re.IGNORECASE
 )
 
@@ -226,80 +215,6 @@ def convert_url(url: str) -> str:
     clean_url = re.sub(r'https?://(?:www\.)?(?:instagram\.com|instagr\.am)/', 'https://www.oginstagram.com/', clean_url, flags=re.IGNORECASE)
 
     return clean_url
-
-async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
-    # 1. Awaryjne wyciąganie nazwy gry z adresu URL (Slug)
-    nazwa = "Gra PlayStation"
-    try:
-        parsed_url = urlparse(url)
-        path_parts = [p for p in parsed_url.path.strip('/').split('/') if p]
-        clean_parts = [p for p in path_parts if p not in ('pl-pl', 'en-us', 'product', 'concept', 'p')]
-        if clean_parts:
-            raw_slug = clean_parts[-1]
-            clean_slug = re.sub(r'^[A-Z0-9]+-[A-Z0-9]+_\d+-', '', raw_slug)
-            clean_slug = re.sub(r'(\d+)$', r' \1', clean_slug)
-            clean_slug = clean_slug.replace('_', ' ').replace('-', ' ').title().strip()
-            if len(clean_slug) > 2:
-                nazwa = clean_slug
-    except Exception:
-        pass
-
-    detale = {
-        "cena_reg": None,
-        "cena_plus": None,
-        "image_url": None,
-        "description": None
-    }
-
-    if "store.playstation.com" in url and "/pl-pl/" not in url:
-        url = re.sub(r'store\.playstation\.com/([a-z]{2}-[a-z]{2}/)?', 'store.playstation.com/pl-pl/', url)
-
-    try:
-        # Prawdziwa emulacja przeglądarki Chrome omijająca Akamai / Cloudflare
-        async with AsyncSession(impersonate="chrome120") as s:
-            response = await s.get(url, timeout=10)
-            if response.status_code == 200:
-                html = response.text
-                soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
-
-                # Tytuł gry z OpenGraph
-                og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
-                if og_title and og_title.get("content"):
-                    parsed_title = og_title["content"].split("|")[0].replace("- PlayStation", "").strip()
-                    if parsed_title:
-                        nazwa = parsed_title
-
-                # Grafika okładki
-                og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
-                if og_image and og_image.get("content"):
-                    detale["image_url"] = og_image["content"]
-
-                # Opis gry
-                og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
-                if og_desc and og_desc.get("content"):
-                    desc = og_desc["content"].strip()
-                    if len(desc) > 160:
-                        desc = desc[:160].rsplit(" ", 1)[0] + "..."
-                    detale["description"] = desc
-
-                # Parsowanie cen
-                for script in soup.find_all("script"):
-                    if script.string and "basePrice" in script.string:
-                        base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', script.string)
-                        discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', script.string)
-
-                        if base_match:
-                            detale["cena_reg"] = base_match.group(1).replace("zl", "zł").strip()
-                        if discount_match:
-                            disc_val = discount_match.group(1).replace("zl", "zł").strip()
-                            if disc_val != detale["cena_reg"]:
-                                detale["cena_plus"] = disc_val
-                        if detale["cena_reg"]:
-                            break
-    except Exception:
-        pass
-
-    return nazwa, detale
 
 def has_delete_role():
     async def predicate(ctx):
@@ -478,7 +393,7 @@ async def edytuj_wiadomosc_error(ctx, error):
         except discord.HTTPException:
             pass
 
-# --- OBSŁUGA WIADOMOŚCI I LINKÓW ---
+# --- OBSŁUGA WIADOMOŚCI I LINKÓW (X/TWITTER, INSTAGRAM) ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -495,67 +410,24 @@ async def on_message(message: discord.Message):
     for url in urls:
         url_lower = url.lower()
 
-        # 1. PS Store
-        if "store.playstation.com" in url_lower:
-            if message.channel.id not in PROMO_CHANNELS:
-                continue
-
-            if url not in seen:
-                seen.add(url)
-
-                try:
-                    await message.delete()
-                except discord.HTTPException:
-                    pass
-
-                nazwa_gry, detale = await get_ps_game_details(url)
-
-                desc = detale.get("description") if detale.get("description") else None
-                embed = discord.Embed(
-                    title=nazwa_gry,
-                    url=url,
-                    description=desc,
-                    color=0x00439C
-                )
-
-                embed.set_author(
-                    name=f"Promka od: {message.author.display_name}",
-                    icon_url=message.author.display_avatar.url
-                )
-
-                if detale.get("cena_plus"):
-                    embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale.get('cena_reg')}~~", inline=True)
-                    embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale.get('cena_plus')}**", inline=True)
-                elif detale.get("cena_reg"):
-                    embed.add_field(name="💰 Cena", value=f"**{detale.get('cena_reg')}**", inline=True)
-                else:
-                    embed.add_field(name="🔗 Sprawdź w sklepie", value=f"[Kliknij tutaj]({url})", inline=False)
-
-                if detale.get("image_url"):
-                    embed.set_image(url=detale.get("image_url"))
-
-                await message.channel.send(embed=embed)
-
-        # 2. Social Media (X/Twitter, Instagram)
+        if "x.com" in url_lower or "twitter.com" in url_lower:
+            platforma = "Twitter/X"
+        elif "instagram.com" in url_lower or "instagr.am" in url_lower:
+            platforma = "Instagram"
         else:
-            if "x.com" in url_lower or "twitter.com" in url_lower:
-                platforma = "Twitter/X"
-            elif "instagram.com" in url_lower or "instagr.am" in url_lower:
-                platforma = "Instagram"
-            else:
-                continue
+            continue
 
-            fixed = convert_url(url)
-            if fixed not in seen:
-                seen.add(fixed)
+        fixed = convert_url(url)
+        if fixed not in seen:
+            seen.add(fixed)
 
-                hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
+            hyperlink = f"> [**{message.author.display_name} wysyła link do** ***{platforma}***]({fixed})"
 
-                await message.channel.send(hyperlink)
-                try:
-                    await message.delete()
-                except discord.HTTPException:
-                    pass
+            await message.channel.send(hyperlink)
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
 
 # --- SYSTEM REAKCJI RÓL ---
 @bot.event
@@ -631,10 +503,7 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                     except Exception:
                         return
             break
-        
-#allegrojacc update 1
 
 # --- START BOTA ---
 if __name__ == "__main__":
     bot.run(TOKEN)
-    
