@@ -17,6 +17,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd /home/ubuntu/fasher-bot
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             venv/bin/pip install -r requirements.txt
             sudo systemctl restart fasherbot
