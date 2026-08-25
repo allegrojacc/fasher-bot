@@ -10,6 +10,9 @@ from typing import Tuple, Dict, Any
 
 import discord
 from discord.ext import commands, tasks
+
+from curl_cffi.requests import AsyncSession
+
 from discord.ext.commands import BadArgument
 
 from dotenv import load_dotenv
@@ -233,9 +236,9 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
         clean_parts = [p for p in path_parts if p not in ('pl-pl', 'en-us', 'product', 'concept', 'p')]
         if clean_parts:
             raw_slug = clean_parts[-1]
-            # Usunięcie identyfikatorów systemowych (np. EP0002-CUSA...)
             clean_slug = re.sub(r'^[A-Z0-9]+-[A-Z0-9]+_\d+-', '', raw_slug)
-            clean_slug = clean_slug.replace('-', ' ').title()
+            clean_slug = re.sub(r'(\d+)$', r' \1', clean_slug)
+            clean_slug = clean_slug.replace('_', ' ').replace('-', ' ').title().strip()
             if len(clean_slug) > 2:
                 nazwa = clean_slug
     except Exception:
@@ -248,36 +251,30 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
         "description": None
     }
 
-    # Wymuszenie polskiej wersji językowej sklepu
     if "store.playstation.com" in url and "/pl-pl/" not in url:
         url = re.sub(r'store\.playstation\.com/([a-z]{2}-[a-z]{2}/)?', 'store.playstation.com/pl-pl/', url)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control": "no-cache"
-    }
-
     try:
-        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as response:
-            if response.status == 200:
-                html = await response.text()
+        # Prawdziwa emulacja przeglądarki Chrome omijająca Akamai / Cloudflare
+        async with AsyncSession(impersonate="chrome120") as s:
+            response = await s.get(url, timeout=10)
+            if response.status_code == 200:
+                html = response.text
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
 
-                # 2. Wyciąganie tytułu z nagłówków metadanych OpenGraph
+                # Tytuł gry z OpenGraph
                 og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
                 if og_title and og_title.get("content"):
                     parsed_title = og_title["content"].split("|")[0].replace("- PlayStation", "").strip()
                     if parsed_title:
                         nazwa = parsed_title
 
-                # 3. Wyciąganie obrazka okładki
+                # Grafika okładki
                 og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                 if og_image and og_image.get("content"):
                     detale["image_url"] = og_image["content"]
 
-                # 4. Wyciąganie opisu
+                # Opis gry
                 og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
                 if og_desc and og_desc.get("content"):
                     desc = og_desc["content"].strip()
@@ -285,7 +282,7 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
                         desc = desc[:160].rsplit(" ", 1)[0] + "..."
                     detale["description"] = desc
 
-                # 5. Odczyt cen ze skryptów strony
+                # Parsowanie cen
                 for script in soup.find_all("script"):
                     if script.string and "basePrice" in script.string:
                         base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', script.string)

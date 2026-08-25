@@ -4,3 +4,4 @@ beautifulsoup4
 flask
 waitress
 backports.zoneinfo;python_version<"3.9"
+curl-cffi>=0.7.0
