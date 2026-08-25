@@ -233,43 +233,34 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
         "description": None
     }
 
-    # Pełniejsze nagłówki udające nowoczesną przeglądarkę
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1"
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
     }
 
     try:
-        async with session.get(url, headers=headers, timeout=12) as response:
-            print(f"PSStore: GET {url} -> status={response.status}")
+        async with session.get(url, headers=headers, timeout=10, allow_redirects=True) as response:
             if response.status == 200:
                 html = await response.text()
-                print(f"PSStore: fetched html {len(html)} bytes")
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
 
-                # 1. Próba wyciągnięcia Tytułu z meta og:title lub title
-                og_title = soup.find("meta", property="og:title")
+                # Tytuł gry
+                og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
                 if og_title and og_title.get("content"):
-                    nazwa = og_title["content"].split("|")[0].strip()
+                    nazwa = og_title["content"].split("|")[0].replace("- PlayStation", "").strip()
                 elif soup.title and soup.title.string:
-                    nazwa = soup.title.string.split("|")[0].strip()
+                    nazwa = soup.title.string.split("|")[0].replace("- PlayStation", "").strip()
 
-                # 2. Próba wyciągnięcia Obrazka
-                og_image = soup.find("meta", property="og:image")
+                # Okładka / Grafika
+                og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                 if og_image and og_image.get("content"):
                     detale["image_url"] = og_image["content"]
 
-                # 3. Próba wyciągnięcia Opisu z og:description lub schema json
-                og_desc = soup.find("meta", property="og:description")
+                # Opis
+                og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
                 if og_desc and og_desc.get("content"):
                     full_desc = og_desc["content"].strip()
                     if len(full_desc) > 160:
@@ -280,79 +271,44 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
                     else:
                         detale["description"] = full_desc
 
-                # 4. Parsowanie JSON-LD dla opisów i cen
-                json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
-                if json_ld_tag and json_ld_tag.string:
+                # Próba odczytu cen ze skryptów JSON-LD
+                for script in soup.find_all("script", type="application/ld+json"):
+                    if not script.string:
+                        continue
                     try:
-                        data = json.loads(json_ld_tag.string)
-                        if "description" in data and detale["description"] == "Brak opisu gry.":
-                            full_desc = data["description"].strip()
-                            if len(full_desc) > 160:
-                                truncated = full_desc[:160]
-                                if " " in truncated:
-                                    truncated = truncated.rsplit(" ", 1)[0]
-                                detale["description"] = truncated + "..."
-                            else:
-                                detale["description"] = full_desc
-                        if "image" in data and not detale["image_url"]:
-                            detale["image_url"] = data["image"]
+                        data = json.loads(script.string)
+                        if isinstance(data, list):
+                            data = data[0]
+                        
+                        offers = data.get("offers")
+                        if offers:
+                            if isinstance(offers, list):
+                                offers = offers[0]
+                            price = offers.get("price")
+                            currency = offers.get("priceCurrency", "zł")
+                            if price:
+                                detale["cena_reg"] = f"{price} {currency}"
                     except Exception:
                         pass
 
-                # 5. Wyciąganie Ceny ze skryptów PS Store
-                cena_standardowa = None
-                cena_promocyjna_plus = None
-                active_cta_id = None
+                # Alternatywne przeszukiwanie tekstu cenowego ze skryptów PS Store
+                if not detale["cena_reg"]:
+                    for script in soup.find_all("script"):
+                        if script.string and "basePrice" in script.string:
+                            base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', script.string)
+                            discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', script.string)
+                            
+                            if base_match:
+                                detale["cena_reg"] = base_match.group(1).replace("zl", "zł").strip()
+                            if discount_match:
+                                disc_val = discount_match.group(1).replace("zl", "zł").strip()
+                                if disc_val != detale["cena_reg"]:
+                                    detale["cena_plus"] = disc_val
+                            if detale["cena_reg"]:
+                                break
 
-                for script in soup.find_all("script"):
-                    if script.string and "activeCtaId" in script.string:
-                        cta_match = re.search(r'"activeCtaId"\s*:\s*"([^"]+)"', script.string)
-                        if cta_match:
-                            active_cta_id = cta_match.group(1)
-                            break
-
-                for script in soup.find_all("script"):
-                    if script.string and "ctaWithPrice" in script.string:
-                        text_content = script.string
-                        if active_cta_id and active_cta_id not in text_content:
-                            continue
-                        if "UPSELL_PS_PLUS_TRIAL" in text_content or "game_trial" in text_content:
-                            continue
-
-                        base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', text_content)
-                        discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', text_content)
-
-                        if base_match:
-                            temp_base = base_match.group(1).replace("zl", "zł").strip()
-                            if "Wersja" not in temp_base and "próbna" not in temp_base:
-                                cena_standardowa = temp_base
-
-                        if discount_match:
-                            stan_ceny = discount_match.group(1).replace("zl", "zł").strip()
-                            if "Wersja" not in stan_ceny and "próbna" not in stan_ceny:
-                                if "UPSELL_PS_PLUS_DISCOUNT" in text_content or '"isTiedToSubscription":true' in text_content:
-                                    cena_promocyjna_plus = stan_ceny
-                                else:
-                                    cena_standardowa = stan_ceny
-
-                        if active_cta_id and cena_standardowa:
-                            break
-
-                print(f"PSStore: parsed prices -> base={cena_standardowa}, plus={cena_promocyjna_plus}")
-
-                if cena_standardowa:
-                    detale["cena_reg"] = cena_standardowa
-
-                if cena_promocyjna_plus and cena_promocyjna_plus != cena_standardowa:
-                    detale["cena_plus"] = cena_promocyjna_plus
-                else:
-                    detale["cena_plus"] = None
-
-            else:
-                print(f"PS Store zwrócił status HTTP: {response.status}")
-
-    except Exception as e:
-        print(f"Błąd podczas parsowania danych z PS Store: {e}")
+    except Exception:
+        pass
 
     return nazwa, detale
 
