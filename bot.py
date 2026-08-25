@@ -233,28 +233,57 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
         "description": "Brak opisu gry."
     }
 
+    # Pełniejsze nagłówki udające nowoczesną przeglądarkę
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1"
     }
 
     try:
-        async with session.get(url, headers=headers, timeout=10) as response:
+        async with session.get(url, headers=headers, timeout=12) as response:
             if response.status == 200:
                 html = await response.text()
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
 
-                if soup.title and soup.title.string:
-                    title_str = soup.title.string
-                    if "|" in title_str:
-                        title_str = title_str.split('|')[0].strip()
-                    nazwa = title_str
+                # 1. Próba wyciągnięcia Tytułu z meta og:title lub title
+                og_title = soup.find("meta", property="og:title")
+                if og_title and og_title.get("content"):
+                    nazwa = og_title["content"].split("|")[0].strip()
+                elif soup.title and soup.title.string:
+                    nazwa = soup.title.string.split("|")[0].strip()
 
+                # 2. Próba wyciągnięcia Obrazka
+                og_image = soup.find("meta", property="og:image")
+                if og_image and og_image.get("content"):
+                    detale["image_url"] = og_image["content"]
+
+                # 3. Próba wyciągnięcia Opisu z og:description lub schema json
+                og_desc = soup.find("meta", property="og:description")
+                if og_desc and og_desc.get("content"):
+                    full_desc = og_desc["content"].strip()
+                    if len(full_desc) > 160:
+                        truncated = full_desc[:160]
+                        if " " in truncated:
+                            truncated = truncated.rsplit(" ", 1)[0]
+                        detale["description"] = truncated + "..."
+                    else:
+                        detale["description"] = full_desc
+
+                # 4. Parsowanie JSON-LD dla opisów i cen
                 json_ld_tag = soup.find("script", id="mfe-jsonld-tags")
                 if json_ld_tag and json_ld_tag.string:
                     try:
                         data = json.loads(json_ld_tag.string)
-                        if "description" in data:
+                        if "description" in data and detale["description"] == "Brak opisu gry.":
                             full_desc = data["description"].strip()
                             if len(full_desc) > 160:
                                 truncated = full_desc[:160]
@@ -263,11 +292,12 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
                                 detale["description"] = truncated + "..."
                             else:
                                 detale["description"] = full_desc
-                        if "image" in data:
+                        if "image" in data and not detale["image_url"]:
                             detale["image_url"] = data["image"]
                     except Exception:
                         pass
 
+                # 5. Wyciąganie Ceny ze skryptów PS Store
                 cena_standardowa = None
                 cena_promocyjna_plus = None
                 active_cta_id = None
@@ -313,6 +343,9 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
                     detale["cena_plus"] = cena_promocyjna_plus
                 else:
                     detale["cena_plus"] = None
+
+            else:
+                print(f"PS Store zwrócił status HTTP: {response.status}")
 
     except Exception as e:
         print(f"Błąd podczas parsowania danych z PS Store: {e}")
