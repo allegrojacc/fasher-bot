@@ -227,10 +227,10 @@ def convert_url(url: str) -> str:
 async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
     nazwa = "Gra PlayStation"
     detale = {
-        "cena_reg": "Sprawdź w sklepie",
+        "cena_reg": None,
         "cena_plus": None,
         "image_url": None,
-        "description": "Brak opisu gry."
+        "description": None
     }
 
     # Pełniejsze nagłówki udające nowoczesną przeglądarkę
@@ -250,8 +250,10 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
 
     try:
         async with session.get(url, headers=headers, timeout=12) as response:
+            print(f"PSStore: GET {url} -> status={response.status}")
             if response.status == 200:
                 html = await response.text()
+                print(f"PSStore: fetched html {len(html)} bytes")
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
 
                 # 1. Próba wyciągnięcia Tytułu z meta og:title lub title
@@ -335,6 +337,8 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
 
                         if active_cta_id and cena_standardowa:
                             break
+
+                print(f"PSStore: parsed prices -> base={cena_standardowa}, plus={cena_promocyjna_plus}")
 
                 if cena_standardowa:
                     detale["cena_reg"] = cena_standardowa
@@ -561,10 +565,11 @@ async def on_message(message: discord.Message):
 
                 nazwa_gry, detale = await get_ps_game_details(url)
 
+                desc = detale.get("description") if detale.get("description") else None
                 embed = discord.Embed(
                     title=nazwa_gry,
                     url=url,
-                    description=detale["description"],
+                    description=desc,
                     color=0x00439C
                 )
 
@@ -573,14 +578,16 @@ async def on_message(message: discord.Message):
                     icon_url=message.author.display_avatar.url
                 )
 
-                if detale["cena_plus"]:
-                    embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale['cena_reg']}~~", inline=True)
-                    embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale['cena_plus']}**", inline=True)
+                if detale.get("cena_plus"):
+                    embed.add_field(name="💰 Cena Standardowa", value=f"~~{detale.get('cena_reg')}~~", inline=True)
+                    embed.add_field(name="🟡 Cena z PS Plus", value=f"**{detale.get('cena_plus')}**", inline=True)
+                elif detale.get("cena_reg"):
+                    embed.add_field(name="💰 Cena", value=f"**{detale.get('cena_reg')}**", inline=True)
                 else:
-                    embed.add_field(name="💰 Cena", value=f"**{detale['cena_reg']}**", inline=True)
+                    embed.add_field(name="🔗 Sprawdź w sklepie", value=f"[Kliknij tutaj]({url})", inline=False)
 
-                if detale["image_url"]:
-                    embed.set_image(url=detale["image_url"])
+                if detale.get("image_url"):
+                    embed.set_image(url=detale.get("image_url"))
 
                 await message.channel.send(embed=embed)
 
