@@ -642,9 +642,10 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
                     except Exception:
                         return
             break
+        
+#allegrojacc update 1
 
 # --- START BOTA ---
 if __name__ == "__main__":
     bot.run(TOKEN)
     
-#allegrojacc update 1
