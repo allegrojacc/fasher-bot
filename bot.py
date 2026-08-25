@@ -225,7 +225,22 @@ def convert_url(url: str) -> str:
     return clean_url
 
 async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
+    # 1. Awaryjne wyciąganie nazwy gry z adresu URL (Slug)
     nazwa = "Gra PlayStation"
+    try:
+        parsed_url = urlparse(url)
+        path_parts = [p for p in parsed_url.path.strip('/').split('/') if p]
+        clean_parts = [p for p in path_parts if p not in ('pl-pl', 'en-us', 'product', 'concept', 'p')]
+        if clean_parts:
+            raw_slug = clean_parts[-1]
+            # Usunięcie identyfikatorów systemowych (np. EP0002-CUSA...)
+            clean_slug = re.sub(r'^[A-Z0-9]+-[A-Z0-9]+_\d+-', '', raw_slug)
+            clean_slug = clean_slug.replace('-', ' ').title()
+            if len(clean_slug) > 2:
+                nazwa = clean_slug
+    except Exception:
+        pass
+
     detale = {
         "cena_reg": None,
         "cena_plus": None,
@@ -233,12 +248,15 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
         "description": None
     }
 
+    # Wymuszenie polskiej wersji językowej sklepu
+    if "store.playstation.com" in url and "/pl-pl/" not in url:
+        url = re.sub(r'store\.playstation\.com/([a-z]{2}-[a-z]{2}/)?', 'store.playstation.com/pl-pl/', url)
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache"
+        "Cache-Control": "no-cache"
     }
 
     try:
@@ -247,66 +265,40 @@ async def get_ps_game_details(url: str) -> Tuple[str, Dict[str, Any]]:
                 html = await response.text()
                 soup = await asyncio.to_thread(BeautifulSoup, html, 'html.parser')
 
-                # Tytuł gry
+                # 2. Wyciąganie tytułu z nagłówków metadanych OpenGraph
                 og_title = soup.find("meta", property="og:title") or soup.find("meta", attrs={"name": "twitter:title"})
                 if og_title and og_title.get("content"):
-                    nazwa = og_title["content"].split("|")[0].replace("- PlayStation", "").strip()
-                elif soup.title and soup.title.string:
-                    nazwa = soup.title.string.split("|")[0].replace("- PlayStation", "").strip()
+                    parsed_title = og_title["content"].split("|")[0].replace("- PlayStation", "").strip()
+                    if parsed_title:
+                        nazwa = parsed_title
 
-                # Okładka / Grafika
+                # 3. Wyciąganie obrazka okładki
                 og_image = soup.find("meta", property="og:image") or soup.find("meta", attrs={"name": "twitter:image"})
                 if og_image and og_image.get("content"):
                     detale["image_url"] = og_image["content"]
 
-                # Opis
+                # 4. Wyciąganie opisu
                 og_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
                 if og_desc and og_desc.get("content"):
-                    full_desc = og_desc["content"].strip()
-                    if len(full_desc) > 160:
-                        truncated = full_desc[:160]
-                        if " " in truncated:
-                            truncated = truncated.rsplit(" ", 1)[0]
-                        detale["description"] = truncated + "..."
-                    else:
-                        detale["description"] = full_desc
+                    desc = og_desc["content"].strip()
+                    if len(desc) > 160:
+                        desc = desc[:160].rsplit(" ", 1)[0] + "..."
+                    detale["description"] = desc
 
-                # Próba odczytu cen ze skryptów JSON-LD
-                for script in soup.find_all("script", type="application/ld+json"):
-                    if not script.string:
-                        continue
-                    try:
-                        data = json.loads(script.string)
-                        if isinstance(data, list):
-                            data = data[0]
-                        
-                        offers = data.get("offers")
-                        if offers:
-                            if isinstance(offers, list):
-                                offers = offers[0]
-                            price = offers.get("price")
-                            currency = offers.get("priceCurrency", "zł")
-                            if price:
-                                detale["cena_reg"] = f"{price} {currency}"
-                    except Exception:
-                        pass
+                # 5. Odczyt cen ze skryptów strony
+                for script in soup.find_all("script"):
+                    if script.string and "basePrice" in script.string:
+                        base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', script.string)
+                        discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', script.string)
 
-                # Alternatywne przeszukiwanie tekstu cenowego ze skryptów PS Store
-                if not detale["cena_reg"]:
-                    for script in soup.find_all("script"):
-                        if script.string and "basePrice" in script.string:
-                            base_match = re.search(r'"basePrice"\s*:\s*"([^"]+)"', script.string)
-                            discount_match = re.search(r'"discountedPrice"\s*:\s*"([^"]+)"', script.string)
-                            
-                            if base_match:
-                                detale["cena_reg"] = base_match.group(1).replace("zl", "zł").strip()
-                            if discount_match:
-                                disc_val = discount_match.group(1).replace("zl", "zł").strip()
-                                if disc_val != detale["cena_reg"]:
-                                    detale["cena_plus"] = disc_val
-                            if detale["cena_reg"]:
-                                break
-
+                        if base_match:
+                            detale["cena_reg"] = base_match.group(1).replace("zl", "zł").strip()
+                        if discount_match:
+                            disc_val = discount_match.group(1).replace("zl", "zł").strip()
+                            if disc_val != detale["cena_reg"]:
+                                detale["cena_plus"] = disc_val
+                        if detale["cena_reg"]:
+                            break
     except Exception:
         pass
 
