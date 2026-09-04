@@ -236,6 +236,9 @@ def has_delete_role():
 # --- ZDARZENIA I KOMENDY ---
 @bot.event
 async def on_ready():
+    global session
+    if session is None or session.closed:
+        session = aiohttp.ClientSession()
 
     logging.info(f'Bot działa jako {bot.user}')
 
@@ -514,11 +517,5 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             break
 
 # --- START BOTA ---
-async def main():
-    async with aiohttp.ClientSession() as custom_session:
-        global session
-        session = custom_session
-        await bot.start(TOKEN)
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(TOKEN)
