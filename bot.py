@@ -24,12 +24,11 @@ except ImportError:
 
 # --- KONFIGURACJA LOGÓW ---
 logging.basicConfig(
-    filename='bot.log',          # Nazwa pliku z logami
-    filemode='a',                 # 'a' oznacza dopisywanie do pliku (nie nadpisze go po restarcie)
-    encoding='utf-8',             # Kodowanie znaków dla polskich liter
+    filename='bot.log',
+    filemode='a',
     format='%(asctime)s | %(levelname)s | %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    level=logging.INFO            # Poziom zbieranych informacji
+    level=logging.INFO
 )
 
 # --- KONFIGURACJA I ZMIENNE ---
