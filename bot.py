@@ -6,6 +6,8 @@ import itertools
 import datetime
 from urllib.parse import urlparse, urlunparse
 
+import logging
+
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import BadArgument
@@ -19,6 +21,16 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     from backports.zoneinfo import ZoneInfo
+
+# --- KONFIGURACJA LOGÓW ---
+logging.basicConfig(
+    filename='bot.log',          # Nazwa pliku z logami
+    filemode='a',                 # 'a' oznacza dopisywanie do pliku (nie nadpisze go po restarcie)
+    encoding='utf-8',             # Kodowanie znaków dla polskich liter
+    format='%(asctime)s | %(levelname)s | %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    level=logging.INFO            # Poziom zbieranych informacji
+)
 
 # --- KONFIGURACJA I ZMIENNE ---
 TOKEN = os.getenv("TOKEN")
@@ -68,7 +80,7 @@ async def load_birthdays():
 
     channel = bot.get_channel(BIRTHDAY_DATABASE_CHANNEL_ID)
     if not channel:
-        print("Błąd: Nie znaleziono kanału bazy urodzin!")
+        logging.error("Błąd: Nie znaleziono kanału bazy urodzin!")
         return
 
     async for msg in channel.history(limit=200):
@@ -78,7 +90,7 @@ async def load_birthdays():
                 BIRTHDAYS[int(u_id_str)] = bday
             except ValueError:
                 continue
-    print(f"Wczytano urodziny dla {len(BIRTHDAYS)} użytkowników.")
+    logging.info(f"Wczytano urodziny dla {len(BIRTHDAYS)} użytkowników.")
 
 async def save_user_birthday(user_id: int, bday: str):
     """Usuwa stary wpis użytkownika z kanału bazy i zapisuje nowy."""
@@ -140,7 +152,7 @@ async def check_youtube():
 
                         IS_LIVE_NOW = is_currently_live
             except Exception as e:
-                print(f"Błąd sprawdzania statusu LIVE: {e}")
+                logging.error(f"Błąd sprawdzania statusu LIVE: {e}")
 
     # 2. Sprawdzanie RSS dla nowych filmów
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
@@ -186,7 +198,7 @@ async def check_youtube():
                             await channel.send(content="Nowy materiał wleciał na kanał PlayStation Polska!", embed=embed)
 
     except Exception as e:
-        print(f"Błąd podczas sprawdzania YouTube: {e}")
+        logging.error(f"Błąd podczas sprawdzania YouTube: {e}")
 
 @tasks.loop(time=bday_time)
 async def check_birthdays():
@@ -224,11 +236,8 @@ def has_delete_role():
 # --- ZDARZENIA I KOMENDY ---
 @bot.event
 async def on_ready():
-    global session
-    if session is None or session.closed:
-        session = aiohttp.ClientSession()
 
-    print(f'Bot działa jako {bot.user}')
+    logging.info(f'Bot działa jako {bot.user}')
 
     await load_birthdays()
 
@@ -505,5 +514,11 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
             break
 
 # --- START BOTA ---
+async def main():
+    async with aiohttp.ClientSession() as custom_session:
+        global session
+        session = custom_session
+        await bot.start(TOKEN)
+
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    asyncio.run(main())
