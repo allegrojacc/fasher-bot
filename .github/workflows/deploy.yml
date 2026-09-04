@@ -19,5 +19,7 @@ jobs:
             cd /home/ubuntu/fasher-bot
             git fetch origin main
             git reset --hard origin/main
+            python3 -m venv venv
+            venv/bin/pip install --upgrade pip
             venv/bin/pip install -r requirements.txt
             sudo systemctl restart fasherbot
