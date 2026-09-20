@@ -250,7 +250,7 @@ async def on_ready():
     if not check_birthdays.is_running():
         check_birthdays.start()
 
-# --- KOMENDA URODZINOWA ---
+# --- KOMENDY URODZINOWE ---
 @bot.command(name="urodziny", aliases=["dodajurodziny", "edytujurodziny"])
 async def ustaw_urodziny(ctx, data: str = None):
     if not data:
@@ -280,6 +280,46 @@ async def ustaw_urodziny(ctx, data: str = None):
         await ctx.message.delete()
     except discord.HTTPException:
         pass
+
+# --- ADM. KOMENDA DO USTAWIANIA URODZIN INNYM UŻYTKOWNIKOM (BEZ PINGOWANIA) ---
+@bot.command(name="ustaw_urodziny_user", aliases=["uurodziny", "setbday"])
+@has_delete_role()
+async def ustaw_urodziny_uzytkownika(ctx, uzytkownik: discord.Member = None, data: str = None):
+    if not uzytkownik or not data:
+        await ctx.send("Użycie: `!uurodziny @Użytkownik DD-MM` (np. `!uurodziny @Jan 15-05`)", delete_after=10)
+        return
+
+    clean_data = data.replace(".", "-").replace("/", "-")
+    parts = clean_data.split("-")
+
+    if len(parts) != 2:
+        await ctx.send("Błędny format! Użyj formatu `DD-MM`, np. `08-08` dla 8 sierpnia.", delete_after=8)
+        return
+
+    try:
+        day = int(parts[0])
+        month = int(parts[1])
+        datetime.datetime(2024, month, day)
+        formatted_bday = f"{day:02d}-{month:02d}"
+    except ValueError:
+        await ctx.send("Podana data nie istnieje! Sprawdź dzień i miesiąc.", delete_after=8)
+        return
+
+    await save_user_birthday(uzytkownik.id, formatted_bday)
+    # Wyświetlamy samą nazwę użytkownika zamiast pingu
+    await ctx.send(f"✅ Zapisano urodziny dla **{uzytkownik.display_name}** na **{formatted_bday}**!", delete_after=8)
+
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+
+@ustaw_urodziny_uzytkownika.error
+async def ustaw_urodziny_uzytkownika_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("Nie masz uprawnień do użycia tej komendy!", delete_after=5)
+    elif isinstance(error, BadArgument):
+        await ctx.send("Nie znaleziono takiego użytkownika lub podano błędną datę.", delete_after=6)
 
 # --- INNE KOMENDY ---
 @bot.command()
