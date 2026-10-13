@@ -194,7 +194,7 @@ async def check_youtube():
                                 color=0x003399
                             )
                             embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
-                            await channel.send(content="Nowy materiał wleciał na kanał PlayStation Polska!", embed=embed)
+                            await channel.send(content="Nowa zapowiedź streama pojawiła się na kanale:", embed=embed)
 
     except Exception as e:
         logging.error(f"Błąd podczas sprawdzania YouTube: {e}")
