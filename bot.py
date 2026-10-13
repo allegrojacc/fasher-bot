@@ -60,10 +60,10 @@ intents.reactions = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 statuses = itertools.cycle([
-    discord.Game("God of War Laufey"),
-    discord.Game("Wolverine"),
-    discord.Game("Control Resonant"),
-    discord.Game("Grand Theft Auto VI"),
+    discord.Game("Kiedy ten stream?"),
+    discord.Game("AstroFasher"),
+    discord.Game("plejstejszyn"),
+    discord.Game("lubisz chleb?"),
 ])
 
 # Strefa czasowa dla bota (Polska)
